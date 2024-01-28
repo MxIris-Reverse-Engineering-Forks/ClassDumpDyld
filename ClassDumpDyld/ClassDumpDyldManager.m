@@ -1,697 +1,72 @@
-/*
-   classdump-dyld is free software: you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation, either version 3 of the License, or
-   any later version.
-
-   classdump-dyld is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
- */
-
-#import <Foundation/Foundation.h>
-#import <TargetConditionals.h>
-#import "dyld_cache_format.h"
-static BOOL inDebug = NO;
-static BOOL isIOS11 = NO;
-#define SIZE_LIMIT  1300000000
-#define CDLog(...) \
-    if (inDebug) NSLog(@"classdump-dyld : %@", [NSString stringWithFormat:__VA_ARGS__])
-
-#define RESET       "\033[0m"
-#define BOLDWHITE   "\033[1m\033[37m"
-#define CLEARSCREEN "\e[1;1H\e[2J"
-
-#include <dirent.h>
-#include <dlfcn.h>
-#include <limits.h>
-#include <mach-o/dyld.h>
-#include <mach-o/dyld_images.h>
-#include <mach-o/nlist.h>
-#include <objc/runtime.h>
-#include <stdio.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/sysctl.h>
-static BOOL addHeadersFolder = NO;
-static BOOL shouldImportStructs = 0;
-static NSMutableArray *allStructsFound = nil;
-static NSMutableArray *classesInStructs = nil;
-static NSMutableArray *classesInClass = nil;
-static NSMutableArray *processedImages = nil;
-NSString *classID = nil;
-NSString *onlyOneClass = nil;
-
-const struct dyld_all_image_infos *dyld_all_image_infos;
-// extern "C" struct dyld_all_image_infos* _dyld_get_all_image_infos();
-NSString * propertyLineGenerator(NSString *attributes, NSString *name);
-NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList);
-
-int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbols,
-               BOOL isRecursive, BOOL buildOriginalDirs, BOOL simpleHeader, BOOL skipAlreadyFound,
-               BOOL skipApplications, int percent);
-
-static void list_dir(const char *dir_name, BOOL writeToDisk, NSString *outputDir, BOOL getSymbols,
-                     BOOL recursive, BOOL simpleHeader, BOOL skipAlreadyFound,
-                     BOOL skipApplications);
-static NSMutableArray *allImagesProcessed;
-static uint8_t *_cacheData;
-static struct dyld_cache_header *_cacheHead;
-static BOOL shouldDLopen32BitExecutables = NO;
-
-/****** Helper Functions ******/
-static NSMutableArray *forbiddenClasses = nil;
-NSMutableArray *forbiddenPaths = nil;
-
-BOOL isMachOExecutable(const char *image) {
-    FILE *machoFile = fopen(image, "rb");
-
-    if (machoFile == 0) {
-        return NO;
-    }
-
-    //#ifdef __LP64__
-    struct mach_header_64 machHeader;
-    //#else
-    // mach_header machHeader;
-    //#endif
-
-    unsigned long n = fread(&machHeader, sizeof(machHeader), 1, machoFile);
-
-    if (n != 1) {
-        fclose(machoFile);
-        return NO;
-    }
-
-    BOOL isExec = machHeader.filetype == MH_EXECUTE;
-
-    fclose(machoFile);
-    return isExec;
-}
-
-BOOL is64BitMachO(const char *image) {
-    FILE *machoFile = fopen(image, "rb");
-
-    if (machoFile == 0) {
-        fclose(machoFile);
-        return NO;
-    }
-
-    struct mach_header_64 machHeader;
-    unsigned long n = fread(&machHeader, sizeof(machHeader), 1, machoFile);
-
-    if (n != 1) {
-        fclose(machoFile);
-        return NO;
-    }
-
-    BOOL is64 = machHeader.magic != MH_MAGIC;  // instead of ==MH_MAGIC_64
-    fclose(machoFile);
-    return is64;
-}
-
-BOOL fileExistsOnDisk(const char *image) {
-    FILE *aFile = fopen(image, "r");
-    BOOL exists = aFile != 0;
-
-    fclose(aFile);
-    return exists;
-}
-
-BOOL arch64(void) {
-    // size_t size;
-    // sysctlbyname("hw.cpu64bit_capable", NULL, &size, NULL, 0);
-    // BOOL cpu64bit;
-    // sysctlbyname("hw.cpu64bit_capable", &cpu64bit, &size, NULL, 0);
-    // return cpu64bit;
-
-#ifdef __LP64__
-    return YES;
-
-#endif
-    return NO;
-}
-
-static BOOL priorToiOS7(void) {
-    return ![objc_getClass("NSProcessInfo") instancesRespondToSelector:@selector(endActivity:)];
-}
-
-NSMutableArray * generateForbiddenClassesArray(BOOL isRecursive) {
-    BOOL IOS11 =
-        [[[NSProcessInfo processInfo] operatingSystemVersionString] rangeOfString:@"Version 11"]
-        .location == 0;
-    BOOL IOS12 =
-        [[[NSProcessInfo processInfo] operatingSystemVersionString] rangeOfString:@"Version 12"]
-        .location == 0;
-
-    forbiddenClasses = [[NSMutableArray alloc] init];
-
-    if (priorToiOS7()) {
-        [forbiddenClasses addObject:@"VKRoadGroup"];
-        [forbiddenClasses addObject:@"SBApplication"];
-        [forbiddenClasses addObject:@"SBSMSApplication"];
-        [forbiddenClasses addObject:@"SBFakeNewsstandApplication"];
-        [forbiddenClasses addObject:@"SBWebApplication"];
-        [forbiddenClasses addObject:@"SBNewsstandApplication"];
-    }
-
-    if (isRecursive) {
-        [forbiddenClasses addObject:@"UIScreen"];
-        [forbiddenClasses addObject:@"UICollectionViewData"];
-    }
-
-    // iWork related crashing classes
-    [forbiddenClasses addObject:@"KNSlideStyle"];
-    [forbiddenClasses addObject:@"TSWPListStyle"];
-    [forbiddenClasses addObject:@"TSWPColumnStyle"];
-    [forbiddenClasses addObject:@"TSWPCharacterStyle"];
-    [forbiddenClasses addObject:@"TSWPParagraphStyle"];
-    [forbiddenClasses addObject:@"TSTTableStyle"];
-    [forbiddenClasses addObject:@"TSTCellStyle"];
-    [forbiddenClasses addObject:@"TSDMediaStyle"];
-    [forbiddenClasses addObject:@"TSDShapeStyle"];
-    [forbiddenClasses addObject:@"TSCHStylePasteboardData"];
-    [forbiddenClasses addObject:@"OABShapeBaseManager"];
-    [forbiddenClasses addObject:@"TSCH3DGLRenderProcessor"];
-    [forbiddenClasses addObject:@"TSCH3DAnimationTimeSlice"];
-    [forbiddenClasses addObject:@"TSCH3DBarChartDefaultAppearance"];
-    [forbiddenClasses addObject:@"TSCH3DGenericAxisLabelPositioner"];
-    [forbiddenClasses addObject:@"TSCHChartSeriesNonStyle"];
-    [forbiddenClasses addObject:@"TSCHChartAxisNonStyle"];
-    [forbiddenClasses addObject:@"TSCHLegendNonStyle"];
-    [forbiddenClasses addObject:@"TSCHChartNonStyle"];
-    [forbiddenClasses addObject:@"TSCHChartSeriesStyle"];
-    [forbiddenClasses addObject:@"TSCHChartAxisStyle"];
-    [forbiddenClasses addObject:@"TSCHLegendStyle"];
-    [forbiddenClasses addObject:@"TSCHChartStyle"];
-    [forbiddenClasses addObject:@"TSCHBaseStyle"];
-
-    // other classes that crash on opening outside their process
-    [forbiddenClasses addObject:@"LineServiceManager"];
-    [forbiddenClasses addObject:@"GKBubbleFlowBubbleControl"];
-    [forbiddenClasses addObject:@"AXBackBoardGlue"];
-    [forbiddenClasses addObject:@"TMBackgroundTaskAgent"];
-    [forbiddenClasses addObject:@"PLWallpaperAssetAccessibility"];
-    [forbiddenClasses addObject:@"MPMusicPlayerController"];
-    [forbiddenClasses addObject:@"PUAlbumListCellContentView"];
-    [forbiddenClasses addObject:@"SBAXItemChooserTableViewCell"];
-    [forbiddenClasses addObject:@"WebPreferences"];
-    [forbiddenClasses addObject:@"WebFrameView"];
-    [forbiddenClasses addObject:@"VMServiceClient"];
-    [forbiddenClasses addObject:@"VKClassicGlobeCanvas"];
-    [forbiddenClasses addObject:@"VKLabelModel"];
-    [forbiddenClasses addObject:@"UICTFont"];
-    [forbiddenClasses addObject:@"UIFont"];
-    [forbiddenClasses addObject:@"NSFont"];
-    [forbiddenClasses addObject:@"PLImageView"];
-    [forbiddenClasses addObject:@"PLPolaroidImageView"];
-    [forbiddenClasses addObject:@"MFSMTPConnection"];
-    [forbiddenClasses addObject:@"MFConnection"];
-    [forbiddenClasses addObject:@"AXSpringBoardSettingsLoader"];
-    [forbiddenClasses addObject:@"AXUIActiveWindow"];
-    [forbiddenClasses addObject:@"VolumeListener"];
-    [forbiddenClasses addObject:@"VKTransitLineMarker"];
-    [forbiddenClasses addObject:@"VKLabelMarkerShield"];
-    [forbiddenClasses addObject:@"VKImageSourceKey"];
-    [forbiddenClasses addObject:@"MMSDK"];
-    [forbiddenClasses addObject:@"MDLAsset"];
-    [forbiddenClasses addObject:@"MDLCamera"];
-    [forbiddenClasses addObject:@"SCNMetalResourceManager"];
-    [forbiddenClasses addObject:@"SCNRenderContextImp"];
-    [forbiddenClasses addObject:@"SUICFlamesView"];
-    [forbiddenClasses addObject:@"WAMediaPickerAsset"];
-    [forbiddenClasses addObject:@"FBSDKAppLinkResolver"];
-    [forbiddenClasses addObject:@"BFTaskCompletionSource"];
-    [forbiddenClasses addObject:@"FilterContext"];
-    [forbiddenClasses addObject:@"GMSZoomTable"];
-    [forbiddenClasses addObject:@"CardIOCardScanner"];
-    [forbiddenClasses addObject:@"LineServiceManager"];
-    [forbiddenClasses addObject:@"WAServerProperties"];
-    [forbiddenClasses addObject:@"FBGroupPendingStream"];
-    [forbiddenClasses addObject:@"FBConsoleGetTagStatuses_result"];
-    [forbiddenClasses addObject:@"CLLocationProviderAdapter"];
-    [forbiddenClasses addObject:@"AXBackBoardGlue"];
-    [forbiddenClasses addObject:@"TMBackgroundTaskAgent"];
-    [forbiddenClasses addObject:@"TSCHReferenceLineNonStyle"];
-    [forbiddenClasses addObject:@"TSTTableInfo"];
-    [forbiddenClasses addObject:@"TSCHReferenceLineStyle"];
-    [forbiddenClasses addObject:@"AZSharedUserDefaults"];
-    [forbiddenClasses addObject:@"NSLeafProxy"];
-    [forbiddenClasses addObject:@"FigIrisAutoTrimmerMotionSampleExport"];
-    [forbiddenClasses addObject:@"RCDebugRecordingController"];
-    [forbiddenClasses addObject:@"CoreKnowledge.CKInMemoryKnowledgeStorage"];
-    [forbiddenClasses addObject:@"CoreKnowledge.CKUserDefaultsKnowledgeStorage"];
-    [forbiddenClasses addObject:@"CoreKnowledge.CKSQLKnowledgeStorage"];
-    [forbiddenClasses addObject:@"CoreKnowledge.CKEntity"];
-    [forbiddenClasses addObject:@"CoreKnowledge.CKKnowledgeStore"];
-    [forbiddenClasses addObject:@"JSExport"];
-    [forbiddenClasses addObject:@"SBClockApplicationIconImageView"];
-
-    if (IOS11 || IOS12) {
-        [forbiddenClasses addObject:@"SKTransformNode"];
-        [forbiddenClasses addObject:@"OZFxPlugParameterHandler"];
-        [forbiddenClasses addObject:@"OZFxPlugParameterHandler_v4"];
-        [forbiddenClasses addObject:@"PAETransitionDefaultBase"];
-        [forbiddenClasses addObject:@"PAEGeneratorDefaultBase"];
-        [forbiddenClasses addObject:@"PAEFilterDefaultBase"];
-        [forbiddenClasses addObject:@"MTLToolsDevice"];
-        [forbiddenClasses addObject:@"CMMTLDevice"];
-        [forbiddenClasses addObject:@"SBReachabilityManager"];
-        [forbiddenClasses addObject:@"IGRTCBroadcastSession"];
-        [forbiddenClasses addObject:@"FBVideoBroadcastSwitchableSession"];
-        [forbiddenClasses addObject:@"FBVideoBroadcastSessionBase"];
-        [forbiddenClasses addObject:@"NFSecureElementWrapper"];
-
-        [forbiddenClasses addObject:@"JTImageView"];
-        [forbiddenClasses addObject:@"PNPWizardScratchpadInkView"];
-        [forbiddenClasses addObject:@"PFMulticasterDistributionMethods"];
-        [forbiddenClasses addObject:@"PFEmbeddedMulticasterImplementation"];
-        [forbiddenClasses addObject:@"AAJSON"];
-    }
-
-    [forbiddenClasses addObject:@"_UISearchBarVisualProviderIOS"];
-    [forbiddenClasses addObject:@"_UISearchBarVisualProviderLegacy"];
-    [forbiddenClasses addObject:@"VNFaceObservation"];
-    [forbiddenClasses addObject:@"CMMTLDevice"];
-    [forbiddenClasses addObject:@"SKTransformNode"];
-    [forbiddenClasses addObject:@"AASession"];
-    [forbiddenClasses addObject:@"TeaFoundation.DynamicLocale"];
-    [forbiddenClasses addObject:@"CoreKnowledge.SRIngestor"];
-    [forbiddenClasses addObject:@"CKHistoricEvent"];
-    [forbiddenClasses addObject:@"SUICFlamesViewLegacy"];
-    [forbiddenClasses addObject:@"SUICFlamesViewMetal"];
-    [forbiddenClasses addObject:@"JTImageView"];
-    [forbiddenClasses addObject:@"MTLToolsDevice"];
-    [forbiddenClasses addObject:@"PNPWizardScratchpadInkView"];
-    [forbiddenClasses addObject:@"OZFxPlugParameterHandler"];
-    [forbiddenClasses addObject:@"OZFxPlugParameterHandler_v4"];
-    [forbiddenClasses addObject:@"PAETransitionDefaultBase"];
-    [forbiddenClasses addObject:@"PAEGeneratorDefaultBase"];
-    [forbiddenClasses addObject:@"PAEFilterDefaultBase"];
-    [forbiddenClasses addObject:@"USKData"];
-    [forbiddenClasses addObject:@"USKProperty"];
-    [forbiddenClasses addObject:@"NTKPrideLinearQuad"];
-    [forbiddenClasses addObject:@"NTKPrideCircularQuad"];
-    [forbiddenClasses addObject:@"NTKPrideSplinesQuad"];
-    [forbiddenClasses addObject:@"Highlights.FallbackHighlightViewModel"];
-    [forbiddenClasses addObject:@"HighlightsHeavy.FallbackHighlightViewModel"];
-
-    // UINSServiceViewController requires Marzipan
-    [forbiddenClasses addObject:@"UINSServiceViewController"];
-
-    // don't work
-    [forbiddenClasses addObject:@"AURATranslator"];
-    [forbiddenClasses addObject:@"admHardwareVolumeDelegate"];
-    [forbiddenClasses addObject:@"MCTeslaConfiguration"];
-    [forbiddenClasses addObject:@"CPCompositorWatcher"];
-    [forbiddenClasses addObject:@"TNSheetStyle"];
-    [forbiddenClasses addObject:@"TSWPRenderer"];
-    [forbiddenClasses addObject:@"TSWPDropCapStyle"];
-    
-    // macOS
-    [forbiddenClasses addObject:@"AWBAlgorithm"];
-    return forbiddenClasses;
-}
-
-static NSString * copyrightMessage(char *image) {
-    @autoreleasepool {
-        NSString *version = [NSProcessInfo processInfo].operatingSystemVersionString;
-        NSLocale *loc = [NSLocale localeWithLocaleIdentifier:@"en-us"];
-        NSString *date = [NSDate.date descriptionWithLocale:loc];
-
-        NSString *message = [[NSString alloc] initWithFormat:@"/*\n\
-    * This header is generated by "
-                             @"classdump-dyld 1.0\n\
-    * on %@\n\
-    * "
-                             @"Operating System: %@\n\
-    * Image Source: "
-                             @"%s\n\
-    * classdump-dyld is licensed under "
-                             @"GPLv3, Copyright \u00A9 2013-2016 by "
-                             @"Elias Limneos.\n\
-    */\n\n", date, version, image];
-
-        return message;
-    }
-}
-
-void printHelp(void) {
-    printf("\nclassdump-dyld v1.0. Licensed under GPLv3, Copyright \u00A9 2013-2014 by Elias "
-           "Limneos.\n\n");
-    printf("Usage: classdump-dyld [<options>] <filename|framework>\n");
-    printf("       or\n");
-    printf("       classdump-dyld [<options>] -r <sourcePath>\n\n");
-
-    printf("Options:\n\n");
-
-    printf("    Structure:\n");
-    printf("        -g   Generate symbol names file\n");
-    printf("        -b   Build original directory structure in output dir\n");
-    printf("        -h   Add a \"Headers\" directory to place headers in\n");
-    printf("        -u   Do not include framework when importing headers (\"Header.h\" instead of "
-           "<frameworkName/Header.h>)\n\n");
-
-    printf("    Output:\n");
-    printf("        -o   <outputdir> Save generated headers to defined path\n\n");
-
-    printf("    Mass dumping: (requires -o)\n");
-    printf("        -c   Dump all images found in dyld_shared_cache\n");
-    printf("        -r   <sourcepath> Recursively dump any compatible Mach-O file found in the given "
-           "path\n");
-    printf("        -s   In a recursive dump, skip header files already found in the same output "
-           "directory\n\n");
-
-    printf("    Single Class:\n");
-    printf("        -j   <className> Dump only the specified class name. (Does not work with -c or "
-           "-r )\n");
-    printf(
-        "                         This might also dump additional imported or required headers.\n\n");
-
-    printf("    Miscellaneous\n");
-    printf("        -D   Enable debug printing for troubleshooting errors\n");
-    printf("        -e   dpopen 32Bit executables instead of injecting them (iOS 5+, use if defaults "
-           "fail.This will skip any 64bit executable) \n");
-    printf("        -a   In a recursive dump, include 'Applications' directories (skipped by "
-           "default) \n\n");
-
-    printf("    Examples:\n");
-    printf(
-        "        Example 1: classdump-dyld -o outdir /System/Library/Frameworks/UIKit.framework\n");
-    printf("        Example 2: classdump-dyld -o outdir /usr/libexec/backboardd\n");
-    printf("        Example 3 (recursive): classdump-dyld -o outdir -c  (Dumps all files residing in "
-           "dyld_shared_cache)\n");
-    printf("        Example 4 (recursive): classdump-dyld -o outdir -r /System/Library/\n");
-    printf("        Example 5 (recursive): classdump-dyld -o outdir -r / -c  (Mass-dumps almost "
-           "everything on device)\n\n");
-}
-
-static NSString * print_free_memory(void) {
-    mach_port_t host_port;
-    mach_msg_type_number_t host_size;
-    vm_size_t pagesize;
-
-    host_port = mach_host_self();
-    host_size = sizeof(vm_statistics_data_t) / sizeof(integer_t);
-    host_page_size(host_port, &pagesize);
-
-    vm_statistics_data_t vm_stat;
-
-    if (host_statistics(host_port, HOST_VM_INFO, (host_info_t)&vm_stat, &host_size) != KERN_SUCCESS) {
-        // Failed to fetch vm stats
-    }
-
-    natural_t mem_free = vm_stat.free_count * (natural_t)pagesize;
-
-    if (mem_free < 10000000) {  // break if less than 10MB of RAM
-        printf("Error: Out of memory. You can repeat with -s option to continue from where left.\n\n");
-        exit(0);
-    }
-
-    if (mem_free < 20000000) {  // warn if less than 20MB of RAM
-        return [NSString stringWithFormat:@"Low Memory: %u MB free. Might exit to prevent system hang",
-                (mem_free / 1024 / 1024)];
-    } else {
-        return [NSString stringWithCString:"" encoding:NSASCIIStringEncoding];
-        // return [NSString stringWithFormat:@"Memory: %u MB free",(mem_free/1024/1024)] ;
-    }
-}
-
-// A nice loading bar. Credits:
-// http://www.rosshemsley.co.uk/2011/02/creating-a-progress-bar-in-c-or-any-other-console-app/
-static inline void loadBar(int x, int n, int r, int w, const char *className) {
-    //    return;
-    // Only update r times.
-    if ((n / r) < 1) {
-        return;
-    }
-
-    if (x % (n / r) != 0) {
-        return;
-    }
-
-    // Calculuate the ratio of complete-to-incomplete.
-    float ratio = x / (float)n;
-    int c = ratio * w;
-
-    // Show the percentage complete.
-    printf("%3d%% [", (int)(ratio * 100));
-
-    // Show the load bar.
-    for (int x = 0; x < c; x++) {
-        printf("=");
-    }
-
-    for (int x = c; x < w; x++) {
-        printf(" ");
-    }
-
-    // ANSI Control codes to go back to the
-    // previous line and clear it.
-    printf("] %s %d/%d <%s>\n\033[F\033[J", [print_free_memory() UTF8String], x, n, className);
-}
-
-NSMutableArray * generateForbiddenPathsArray(BOOL isRecursive) {
-    forbiddenPaths = [[NSMutableArray alloc] init];
-    // The following paths are skipped for known issues that arise when their symbols are added to the
-    // flat namespace
-
-    [forbiddenPaths addObject:@"/usr/bin"];
-    [forbiddenPaths addObject:@"/Developer"];
-    [forbiddenPaths addObject:@"/Library/Switches"];
-    [forbiddenPaths addObject:@"SBSettings"];
-    [forbiddenPaths addObject:@"Activator"];
-    [forbiddenPaths addObject:@"launchd"];
-
-    if (priorToiOS7()) {
-        [forbiddenPaths addObject:@"/System/Library/Frameworks/PassKit.framework/passd"];
-    }
-
-    [forbiddenPaths addObject:@"AGXMetal"];
-    [forbiddenPaths addObject:@"PhotosUI"];
-    [forbiddenPaths addObject:@"AccessibilityUIService"];
-    [forbiddenPaths addObject:@"CoreSuggestionsInternals"];
-    [forbiddenPaths addObject:@"GameCenterPrivateUI"];
-    [forbiddenPaths addObject:@"GameCenterUI"];
-    [forbiddenPaths addObject:@"LegacyGameKit"];
-    [forbiddenPaths addObject:@"IMAP.framework"];
-    [forbiddenPaths addObject:@"POP.framework"];
-    [forbiddenPaths addObject:@"Parsec"];
-    [forbiddenPaths addObject:@"ZoomTouch"];
-    [forbiddenPaths addObject:@"VisualVoicemailUsage"];
-
-    if (isRecursive) {
-        [forbiddenPaths addObject:@"braille"];
-        [forbiddenPaths addObject:@"QuickSpeak"];
-        [forbiddenPaths addObject:@"HearingAidUIServer"];
-        [forbiddenPaths addObject:@"Mail.siriUIBundle"];
-        [forbiddenPaths addObject:@"TTSPlugins"];
-    }
-
-    [forbiddenPaths addObject:@"AppAnalytics"];
-    [forbiddenPaths addObject:@"CoreKnowledge"];
-
-    // m1
-    [forbiddenPaths addObject:@"/System/iOSSupport"];
-//    [forbiddenPaths addObject:@"UIKitMacHelper.framework"];
-    [forbiddenPaths addObject:@"ContactsUIMacHelper.framework"];
-    [forbiddenPaths addObject:@"AVKitMacHelper.framework"];
-//    [forbiddenPaths addObject:@"FinderKit.framework"];
-    [forbiddenPaths addObject:@"Mail.framework"];
-    [forbiddenPaths addObject:@"MessageUIMacHelper.framework"];
-    [forbiddenPaths addObject:@"PassKitMacHelper.framework"];
-    [forbiddenPaths addObject:@"ReplayKitMacHelper.framework"];
-    [forbiddenPaths addObject:@"StoreKitMacHelper.framework"];
-    [forbiddenPaths addObject:@"libcrypto.dylib"];
-    [forbiddenPaths addObject:@"libssl.dylib"];
-
-    [forbiddenPaths addObject:@"/System/Library/Extensions"];
-
-    [forbiddenPaths addObject:@"/System/Library/QuickLook"];
-    
-    [forbiddenPaths addObject:@"/System/Library/PrivateFrameworks/ActionKit.framework"];
-    [forbiddenPaths addObject:@"/System/Library/PrivateFrameworks/ActionKitUI.framework"];
-    [forbiddenPaths addObject:@"/System/Library/PrivateFrameworks/WorkflowUI.framework"];
-    
-    return forbiddenPaths;
-}
-
-long locationOfString(const char *haystack, const char *needle) {
-    const char *found = strstr(haystack, needle);
-    long anIndex = -1;
-
-    if (found != NULL) {
-        anIndex = found - haystack;
-    }
-
-    return anIndex;
-}
-
-/****** Parsing Functions ******/
-@implementation NSMethodSignature (classdump_dyld_helper)
-
-+ (NSMethodSignature *)cd_signatureWithObjCTypes:(const char *)types {
-    __block NSString *text = [NSString stringWithCString:types encoding:NSUTF8StringEncoding];
-
-    while ([text rangeOfString:@"("].location != NSNotFound) {
-        NSRegularExpressionOptions opt = 0;
-        NSRegularExpression *regex =
-            [NSRegularExpression regularExpressionWithPattern:@"\\(([^\\(\\)]+)\\)"
-                                                      options:opt
-                                                        error:nil];
-
-        // test if the anticipated union (embraced in parentheseis) is actually a function definition
-        // rather than a union
-
-        NSRange range = [text rangeOfString:@"\\(([^\\(\\)]+)\\)" options:NSRegularExpressionSearch];
-        NSString *rep = [text substringWithRange:range];
-        NSString *testUnion =
-            [rep stringByReplacingOccurrencesOfString:@"("
-                                           withString:@"{"]; // just to test if it internally passes as
-        // a masqueraded struct
-        testUnion = [testUnion stringByReplacingOccurrencesOfString:@")" withString:@"}"];
-
-        if ([testUnion rangeOfString:@"="].location == NSNotFound) {
-            // its a function!
-            text = [text stringByReplacingOccurrencesOfString:@"(" withString:@"__FUNCTION_START__"];
-            text = [text stringByReplacingOccurrencesOfString:@")" withString:@"__FUNCTION_END__"];
-            continue;
-        }
-
-        [regex
-         enumerateMatchesInString:text
-                          options:0
-                            range:NSMakeRange(0, [text length])
-                       usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags,
-                                    BOOL *stop) {
-            for (int i = 1; i < [result numberOfRanges]; i++) {
-                NSString *textFound = [text substringWithRange:[result rangeAtIndex:i]];
-                text = [text
-                        stringByReplacingOccurrencesOfString:[NSString
-                                                              stringWithFormat:@"(%@)",
-                                                              textFound]
-                                                  withString:
-                        [NSString
-                         stringWithFormat:
-                         @"{union={%@}ficificifloc}",
-                         textFound]];      // add an
-                // impossible match
-                // of types
-                *stop = YES;
-            }
-        }];
-    }
-
-    if ([text rangeOfString:@"{"].location != NSNotFound) {
-        BOOL FOUND = 1;
-        NSRegularExpressionOptions opt = 0;
-        NSRegularExpression *regex =
-            [NSRegularExpression regularExpressionWithPattern:@"(?<!\\^)\\{([^\\{^\\}]+)\\}"
-                                                      options:opt
-                                                        error:nil];
-
-        while (FOUND) {
-            NSRange range = [regex rangeOfFirstMatchInString:text
-                                                     options:0
-                                                       range:NSMakeRange(0, [text length])];
-
-            if (range.location != NSNotFound) {
-                FOUND = 1;
-                NSString *result = [text substringWithRange:range];
-                text = [text
-                        stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"%@", result]
-                                                  withString:[NSString stringWithFormat:@"^^^%@", result]];
-            } else {
-                FOUND = 0;
-            }
-        }
-
-        FOUND = 1;
-        regex = [NSRegularExpression regularExpressionWithPattern:@"(?<!\\^)\\{([^\\}]+)\\}"
-                                                          options:opt
-                                                            error:nil];
-
-        while (FOUND) {
-            NSRange range = [regex rangeOfFirstMatchInString:text
-                                                     options:0
-                                                       range:NSMakeRange(0, [text length])];
-
-            if (range.location != NSNotFound) {
-                FOUND = 1;
-                NSString *result = [text substringWithRange:range];
-                text = [text
-                        stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"%@", result]
-                                                  withString:[NSString stringWithFormat:@"^^^%@", result]];
-            } else {
-                FOUND = 0;
-            }
-        }
-    }
-
-    text = [text stringByReplacingOccurrencesOfString:@"__FUNCTION_START__" withString:@"("];
-    text = [text stringByReplacingOccurrencesOfString:@"__FUNCTION_END__" withString:@")"];
-
-    types = [text UTF8String];
-
-    @try {
-        return [self signatureWithObjCTypes:types];
-    } @catch (NSException *exception) {
-        return nil;
-    } @finally {}
-}
-
-- (const char *)cd_getArgumentTypeAtIndex:(int)anIndex {
-    const char *argument = [self getArgumentTypeAtIndex:anIndex];
-
-    NSString *char_ns = [NSString stringWithCString:argument encoding:NSUTF8StringEncoding];
-    __block NSString *text = char_ns;
-
-    if ([text rangeOfString:@"^^^"].location != NSNotFound) {
-        text = [text stringByReplacingOccurrencesOfString:@"^^^" withString:@""];
-    }
-
-    while ([text rangeOfString:@"{union"].location != NSNotFound) {
-        NSRegularExpressionOptions opt = 0;
-        NSRegularExpression *regex =
-            [NSRegularExpression regularExpressionWithPattern:@"(\\{union.+?ficificifloc\\})"
-                                                      options:opt
-                                                        error:nil];
-        [regex
-         enumerateMatchesInString:text
-                          options:0
-                            range:NSMakeRange(0, [text length])
-                       usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags,
-                                    BOOL *stop) {
-            for (int i = 1; i < [result numberOfRanges]; i++) {
-                NSString *textFound = [text substringWithRange:[result rangeAtIndex:i]];
-
-                NSString *textToPut = [textFound substringFromIndex:8];
-                textToPut = [textToPut
-                             substringToIndex:textToPut.length - 1 - (@"ficificifloc".length + 1)];
-                text = [text
-                        stringByReplacingOccurrencesOfString:[NSString
-                                                              stringWithFormat:@"%@",
-                                                              textFound]
-                                                  withString:[NSString
-                                    stringWithFormat:@"(%@)",
-                                                              textToPut]];
-                *stop = YES;
-            }
-        }];
-    }
-
-    char_ns = text;
-    return [char_ns UTF8String];
+//
+//  ClassDumpDyldManager.m
+//  ClassDumpDyld
+//
+//  Created by JH on 2024/1/26.
+//
+
+#import "ClassDumpDyldManager.h"
+#import "ClassDumpDyldHelper.h"
+#import "NSMethodSignature+ClassDumpDyld.h"
+@implementation NSArray (Safe)
+
+- (nullable id)objectAtSafeIndex:(NSUInteger)safeIndex {
+    return safeIndex < self.count ? self[safeIndex] : nil;
 }
 
 @end
 
-/****** String Parsing Functions ******/
+#define CDLog(...) \
+    if (self.isDebug) NSLog(@"classdump-dyld : %@", [NSString stringWithFormat:__VA_ARGS__])
 
-/****** Properties Parser ******/
+typedef void *MSImageRef;
 
-NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
+@interface ClassDumpDyldManager () {
+    const struct dyld_all_image_infos * (*my_dyld_get_all_image_infos)(void);
+    MSImageRef (*_MSGetImageByName)(const char *name);
+    void * (*_MSFindSymbol)(MSImageRef ref, const char *name);
+    const struct dyld_all_image_infos *dyld_all_image_infos;
+    uint8_t *_cacheData;
+    struct dyld_cache_header *_cacheHead;
+}
+@property (nonatomic) BOOL addHeadersFolder;
+@property (nonatomic) BOOL shouldImportStructs;
+@property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *allStructsFound;
+@property (nonatomic, strong) NSMutableArray *allImagesProcessed;
+@property (nonatomic, strong) NSMutableArray<NSString *> *classesInStructs;
+@property (nonatomic, strong) NSMutableArray<NSString *> *classesInClass;
+@property (nonatomic, strong) NSMutableArray<NSString *> *processedImages;
+@property (nonatomic, copy) NSString *classID;
+@property (nonatomic, copy) NSString *onlyOneClass;
+@property (nonatomic, strong) NSMutableSet<NSString *> *mutableForbiddenClasses;
+@property (nonatomic, strong) NSMutableSet<NSString *> *mutableForbiddenPaths;
+@property (nonatomic) BOOL shouldDLopen32BitExecutables;
+
+
+- (NSString *)generatePropertyLineWithAttributes:(NSString *)attributes withName:(NSString *)name;
+- (NSMutableArray *)generatePropertiesArrayFromString:(NSString *)propertiesString;
+- (NSString *)buildProtocolFile:(Protocol *)currentProtocol;
+- (NSString *)representedStructFromStruct:(NSString *)inStruct inName:(NSString *)inName inIvarList:(BOOL)inIvarList isFinal:(BOOL)isFinal;
+- (NSString *)representedUnionFromUnion:(NSString *)inUnion;
+- (NSString *)commonTyps:(NSString *)atype inName:(NSString **)inName inIvarList:(BOOL)inIvarList;
+- (NSString *)generateMethodLinesWithClass:(Class)someclass isInstanceMethod:(BOOL)isInstanceMethod withPropertiesArray:(NSMutableArray *)propertiesArray;
+- (void)findDyldGetAllImageInfosSymbol;
+- (void)listDirWithName:(const char *)dir_name isWriteToDisk:(BOOL)writeToDisk outputDir:(NSString *)outputDir isGetSymbols:(BOOL)getSymbols isRecursive:(BOOL)recursive isSimpleHeader:(BOOL)simpleHeader isSkipAlreadyFound:(BOOL)skipAlreadyFound isSkipApplications:(BOOL)skipApplications;
+- (NSInteger)parseImage:(char *)image isWriteToDisk:(BOOL)writeToDisk outputDir:(NSString *)outputDir isGetSymbols:(BOOL)getSymbols isRecursive:(BOOL)recursive isBuildOriginalDirs:(BOOL)buildOriginalDirs isSimpleHeader:(BOOL)simpleHeader isSkipAlreadyFound:(BOOL)skipAlreadyFound isSkipApplications:(BOOL)skipApplications percent:(NSInteger)percent;
+@end
+
+@implementation ClassDumpDyldManager
+SingletonImplementation(ClassDumpDyldManager, sharedManager)
+
+- (instancetype)init {
+    if (self = [super init]) {
+        
+    }
+    return self;
+}
+
+
+- (NSString *)generatePropertyLineWithAttributes:(NSString *)attributes withName:(NSString *)name {
     NSCharacterSet *parSet = [NSCharacterSet characterSetWithCharactersInString:@"()"];
 
     attributes = [attributes stringByTrimmingCharactersInSet:parSet];
@@ -708,9 +83,9 @@ NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
         NSString *classFoundInProperties = [type stringByReplacingOccurrencesOfString:@" *"
                                                                            withString:@""];
 
-        if (![classesInClass containsObject:classFoundInProperties] &&
+        if (![self.classesInClass containsObject:classFoundInProperties] &&
             [classFoundInProperties rangeOfString:@"<"].location == NSNotFound) {
-            [classesInClass addObject:classFoundInProperties];
+            [self.classesInClass addObject:classFoundInProperties];
         }
 
         if ([type rangeOfString:@"<"].location != NSNotFound) {
@@ -726,7 +101,7 @@ NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
                [type rangeOfString:@"\""].location == NSNotFound) {
         type = @"id";
     } else {
-        type = commonTypes(type, &name, NO);
+        type = [self commonTyps:type inName:&name inIvarList:NO];
     }
 
     if ([type rangeOfString:@"="].location != NSNotFound) {
@@ -818,9 +193,7 @@ NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
             initWithFormat:@"\n%@%@ %@ %@; %@", @"@property ", attrString, type, name, synthesize];
 }
 
-/****** Properties Combined Array (for fixing non-matching types)   ******/
-
-static NSMutableArray * propertiesArrayFromString(NSString *propertiesString) {
+- (NSMutableArray *)generatePropertiesArrayFromString:(NSString *)propertiesString {
     NSMutableArray *propertiesExploded =
         [[propertiesString componentsSeparatedByString:@"\n"] mutableCopy];
     NSMutableArray *typesAndNamesArray = [NSMutableArray array];
@@ -870,9 +243,7 @@ static NSMutableArray * propertiesArrayFromString(NSString *propertiesString) {
     return typesAndNamesArray;
 }
 
-/****** Protocol Parser ******/
-
-NSString * buildProtocolFile(Protocol *currentProtocol) {
+- (NSString *)buildProtocolFile:(Protocol *)currentProtocol {
     NSMutableString *protocolsMethodsString = [[NSMutableString alloc] init];
 
     NSString *protocolName = [NSString stringWithCString:protocol_getName(currentProtocol)
@@ -932,10 +303,8 @@ NSString * buildProtocolFile(Protocol *currentProtocol) {
                 [classesInProtocol addObject:classFoundInProperties];
             }
         }
-
-        NSString *newString =
-            propertyLineGenerator([NSString stringWithCString:attrs encoding:NSUTF8StringEncoding],
-                                  [NSString stringWithCString:propname encoding:NSUTF8StringEncoding]);
+                              
+        NSString *newString = [self generatePropertyLineWithAttributes:[NSString stringWithCString:attrs encoding:NSUTF8StringEncoding] withName:[NSString stringWithCString:propname encoding:NSUTF8StringEncoding]];
 
         if ([protPropertiesString rangeOfString:newString].location == NSNotFound) {
             [protPropertiesString appendString:newString];
@@ -975,9 +344,8 @@ NSString * buildProtocolFile(Protocol *currentProtocol) {
             if (signature == nil) continue;
             // CDLog(@"\t\t\t\tGot cd_signatureWithObjCTypes of current protocol");
 
-            NSString *returnType = commonTypes([NSString stringWithCString:[signature methodReturnType]
-                                                                  encoding:NSUTF8StringEncoding],
-                                               nil, NO);
+            NSString *returnType = [self commonTyps:[NSString stringWithCString:[signature methodReturnType]
+                                                                       encoding:NSUTF8StringEncoding] inName:nil inIvarList:NO];
 
             NSArray *selectorsArray = [protSelector componentsSeparatedByString:@":"];
 
@@ -992,12 +360,10 @@ NSString * buildProtocolFile(Protocol *currentProtocol) {
                                  stringByAppendingString:
                                  [NSString
                                   stringWithFormat:@"%@:(%@)arg%d%@", [selectorsArray objectAtIndex:ad - 2],
-                                  commonTypes(
-                                      [NSString
-                                       stringWithCString:[signature
-                                                          cd_getArgumentTypeAtIndex:ad]
-                                                encoding:NSUTF8StringEncoding],
-                                      nil, NO),
+                                  [self commonTyps:[NSString
+                                                    stringWithCString:[signature
+                                                                       cd_getArgumentTypeAtIndex:ad]
+                                                             encoding:NSUTF8StringEncoding] inName:nil inIvarList:NO],
                                   argCount, space]];
                 }
             } else {
@@ -1015,7 +381,7 @@ NSString * buildProtocolFile(Protocol *currentProtocol) {
     }
 
     // FIX EQUAL TYPES OF PROPERTIES AND METHODS
-    NSArray *propertiesArray = propertiesArrayFromString(protPropertiesString);
+    NSArray *propertiesArray = [self generatePropertiesArrayFromString:protPropertiesString];
     NSArray *lines = [protocolsMethodsString componentsSeparatedByString:@"\n"];
     NSMutableString *finalString = [[NSMutableString alloc] init];
 
@@ -1081,30 +447,7 @@ NSString * buildProtocolFile(Protocol *currentProtocol) {
     return finalString;
 }
 
-static BOOL hasMalformedID(NSString *parts) {
-    if ([parts rangeOfString:@"@\""].location != NSNotFound &&
-        [parts rangeOfString:@"@\""].location + 2 < parts.length - 1 &&
-        ([[parts substringFromIndex:[parts rangeOfString:@"@\""].location + 2] rangeOfString:@"\""]
-         .location == [[parts substringFromIndex:[parts rangeOfString:@"@\""].location + 2]
-                       rangeOfString:@"\"\""]
-         .location ||
-         [[parts substringFromIndex:[parts rangeOfString:@"@\""].location + 2] rangeOfString:@"\""]
-         .location == [[parts substringFromIndex:[parts rangeOfString:@"@\""].location + 2]
-                       rangeOfString:@"\"]"]
-         .location ||
-         [[parts substringFromIndex:[parts rangeOfString:@"@\""].location + 2] rangeOfString:@"\""]
-         .location ==
-         [parts substringFromIndex:[parts rangeOfString:@"@\""].location + 2].length - 1)) {
-        return YES;
-    }
-
-    return NO;
-}
-
-/****** Structs Parser ******/
-#define NSStringFromBOOL(b) ((b) ? @"YES" : @"NO")
-
-static NSString * representedStructFromStruct(NSString *inStruct, NSString *inName, BOOL inIvarList, BOOL isFinal) {
+- (NSString *)representedStructFromStruct:(NSString *)inStruct inName:(NSString *)inName inIvarList:(BOOL)inIvarList isFinal:(BOOL)isFinal {
     if ([inStruct rangeOfString:@"\""].location == NSNotFound) { // not an ivar type struct, it has the names of types in quotes
         if ([inStruct rangeOfString:@"{?="].location == 0) {
             // UNKNOWN TYPE, WE WILL CONSTRUCT IT
@@ -1112,7 +455,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
             NSString *types = [inStruct substringFromIndex:3];
             types = [types substringToIndex:types.length - 1];
 
-            for (NSDictionary *dict in allStructsFound) {
+            for (NSDictionary *dict in self.allStructsFound) {
                 if ([[dict objectForKey:@"types"] isEqual:types]) {
                     return [dict objectForKey:@"name"];
                 }
@@ -1129,7 +472,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
                                      usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags, BOOL *stop)
                 {
                     for (int i = 1; i < [result numberOfRanges]; ) {
-                        NSString *stringToPut = representedStructFromStruct([NSString stringWithFormat:@"{%@}", [types substringWithRange:[result rangeAtIndex:i]]], nil, NO, 0);
+                        NSString *stringToPut = [self representedStructFromStruct:[NSString stringWithFormat:@"{%@}", [types substringWithRange:[result rangeAtIndex:i]]] inName:nil inIvarList:NO isFinal:NO];
                         blParts = [types stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"{%@}", [types substringWithRange:[result rangeAtIndex:i]]] withString:stringToPut];
 
                         if ([blParts rangeOfString:@"{"].location == NSNotFound) {
@@ -1149,7 +492,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
             }
             NSMutableArray *alreadyFoundStructs = [NSMutableArray array];
 
-            for (NSDictionary *dict in allStructsFound) {
+            for (NSDictionary *dict in self.allStructsFound) {
                 if ([types rangeOfString:[dict objectForKey:@"name"]].location != NSNotFound || [types rangeOfString:@"CFDictionary"].location != NSNotFound) {
                     BOOL isCFDictionaryHackException = 0;
                     NSString *str;
@@ -1236,8 +579,8 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
 
                 if (![string isEqual:@"["] && ![string isEqual:@"]"] && ![string isEqual:@"{"] && ![string isEqual:@"}"] && ![string isEqual:@"\""] && ![string isEqual:@"b"] && ![string isEqual:@"("] && ![string isEqual:@")"]) {
                     fieldCount++;
-                    NSString *newString = [NSString stringWithFormat:@"\"field%d\"%@", fieldCount, commonTypes(string, nil, NO)];
-                    types = [types stringByReplacingCharactersInRange:NSMakeRange(i, 1) withString:[NSString stringWithFormat:@"\"field%d\"%@", fieldCount, commonTypes(string, nil, NO)]];
+                    NSString *newString = [NSString stringWithFormat:@"\"field%d\"%@", fieldCount, [self commonTyps:string inName:nil inIvarList:NO]];
+                    types = [types stringByReplacingCharactersInRange:NSMakeRange(i, 1) withString:[NSString stringWithFormat:@"\"field%d\"%@", fieldCount, [self commonTyps:string inName:nil inIvarList:NO]]];
                     i += newString.length - 1;
                 }
             }
@@ -1276,7 +619,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
                 return whatIBuilt;
             }
 
-            NSString *whatIReturn = representedStructFromStruct(whatIBuilt, nil, NO, YES);
+            NSString *whatIReturn = [self representedStructFromStruct:whatIBuilt inName:nil inIvarList:NO isFinal:YES];
             return whatIReturn;
         } else {
             if ([inStruct rangeOfString:@"="].location == NSNotFound) {
@@ -1299,10 +642,9 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
 
     NSString *parts = [inStruct substringFromIndex:ison + 1];
     parts = [parts substringToIndex:parts.length - 1]; // remove last character "}"
-
     if ([parts rangeOfString:@"{"].location == NSNotFound) { //does not contain other struct
-        if (hasMalformedID(parts)) {
-            while ([parts rangeOfString:@"@"].location != NSNotFound && hasMalformedID(parts)) {
+        if ([ClassDumpDyldHelper hasMalformedIDWithParts:parts]) {
+            while ([parts rangeOfString:@"@"].location != NSNotFound && [ClassDumpDyldHelper hasMalformedIDWithParts:parts]) {
                 NSString *trialString = [parts substringFromIndex:[parts rangeOfString:@"@"].location + 2];
 
                 if ([trialString rangeOfString:@"\""].location != [trialString rangeOfString:@"\"\""].location && [trialString rangeOfString:@"\""].location != trialString.length - 1 && [trialString rangeOfString:@"]"].location != [trialString rangeOfString:@"\""].location + 1) {
@@ -1318,8 +660,8 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
                     NSUInteger nextlocation = [asubstring rangeOfString:@"\""].location;
                     asubstring = [asubstring substringWithRange:NSMakeRange(0, nextlocation)];
 
-                    if ([classesInStructs indexOfObject:asubstring] == NSNotFound) {
-                        [classesInStructs addObject:asubstring];
+                    if ([self.classesInStructs indexOfObject:asubstring] == NSNotFound) {
+                        [self.classesInStructs addObject:asubstring];
                     }
 
                     parts = [parts stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"@\"%@\"", asubstring] withString:[NSString stringWithFormat:@"^%@", asubstring]];
@@ -1341,7 +683,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
 
         if ([structName isEqual:@"?"]) {
             wasKnown = 0;
-            structName = [NSString stringWithFormat:@"SCD_Struct_%@%d", classID, (int)[allStructsFound count]];
+            structName = [NSString stringWithFormat:@"SCD_Struct_%@%d", self.classID, (int)[self.allStructsFound count]];
         }
 
         if ([structName rangeOfString:@"_"].location == 0) {
@@ -1354,7 +696,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
             NSString *nam = [brokenParts objectAtIndex:i];
             NSString *typ = [brokenParts objectAtIndex:i + 1];
             types = [types stringByAppendingString:[brokenParts objectAtIndex:i + 1]];
-            representation = reallyIsFlagInIvars ? [representation stringByAppendingString:[NSString stringWithFormat:@"\t\t%@ %@;\n", commonTypes(typ, &nam, NO), nam]] : [representation stringByAppendingString:[NSString stringWithFormat:@"\t%@ %@;\n", commonTypes(typ, &nam, NO), nam]];
+            representation = reallyIsFlagInIvars ? [representation stringByAppendingString:[NSString stringWithFormat:@"\t\t%@ %@;\n", [self commonTyps:typ inName:&nam inIvarList:NO], nam]] : [representation stringByAppendingString:[NSString stringWithFormat:@"\t%@ %@;\n", [self commonTyps:typ inName:&nam inIvarList:NO], nam]];
         }
 
         representation = reallyIsFlagInIvars ? [representation stringByAppendingString:@"\t} "] : [representation stringByAppendingString:@"} "];
@@ -1370,7 +712,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
         representation = reallyIsFlagInIvars ? representation : [representation stringByAppendingString:[NSString stringWithFormat:@"%@;\n\n", structName]];
 
         if (isFinal && !reallyIsFlagInIvars) {
-            for (NSMutableDictionary *dict in allStructsFound) {
+            for (NSMutableDictionary *dict in self.allStructsFound) {
                 if ([[dict objectForKey:@"types"] isEqual:types] && !wasKnown && ![[dict objectForKey:@"name"] isEqual:[dict objectForKey:@"types"]]) {
                     NSString *repr = [dict objectForKey:@"representation"];
 
@@ -1387,7 +729,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
 
         BOOL found = NO;
 
-        for (NSDictionary *dict in allStructsFound) {
+        for (NSDictionary *dict in self.allStructsFound) {
             if ([[dict objectForKey:@"name"] isEqual:structName]) {
                 found = YES;
                 return structName;
@@ -1397,7 +739,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
         }
 
         if (!found) {
-            for (NSMutableDictionary *dict in allStructsFound) {
+            for (NSMutableDictionary *dict in self.allStructsFound) {
                 if ([[dict objectForKey:@"types"] isEqual:types] && !wasKnown) {
                     found = YES;
                     return [dict objectForKey:@"name"];
@@ -1406,7 +748,7 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
         }
 
         if (!found && !reallyIsFlagInIvars) {
-            [allStructsFound addObject:[NSMutableDictionary dictionaryWithObjectsAndKeys:representation, @"representation", structName, @"name", types, @"types", nil]];
+            [self.allStructsFound addObject:[NSMutableDictionary dictionaryWithObjectsAndKeys:representation, @"representation", structName, @"name", types, @"types", nil]];
         }
 
         return reallyIsFlagInIvars ? representation : structName;
@@ -1420,30 +762,29 @@ static NSString * representedStructFromStruct(NSString *inStruct, NSString *inNa
                                       range:NSMakeRange(0, [parts length])
                                  usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags, BOOL *stop)
             {
-                for (int i = 1; i < [result numberOfRanges]; ) {
-                    blParts = [parts stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"{%@}", [parts substringWithRange:[result rangeAtIndex:i]]] withString:representedStructFromStruct([NSString stringWithFormat:@"{%@}", [parts substringWithRange:[result rangeAtIndex:i]]], nil, NO, 0)];
+                for (int i = 1; i < [result numberOfRanges];) {
+                    NSString *string = [self representedStructFromStruct:[NSString stringWithFormat:@"{%@}", [parts substringWithRange:[result rangeAtIndex:i]]] inName:nil inIvarList:NO isFinal:NO];
+                    blParts = [parts stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"{%@}", [parts substringWithRange:[result rangeAtIndex:i]]] withString:string];
                     break;
                 }
             }];
             parts = blParts;
         }
         NSString *rebuiltStruct = [NSString stringWithFormat:@"{%@=%@}", structName, parts];
-        NSString *final = representedStructFromStruct(rebuiltStruct, nil, NO, YES);
+        NSString *final = [self representedStructFromStruct:rebuiltStruct inName:nil inIvarList:NO isFinal:YES];
         return final;
     }
 
     return inStruct;
 }
 
-/****** Unions Parser ******/
-
-NSString * representedUnionFromUnion(NSString *inUnion) {
+- (NSString *)representedUnionFromUnion:(NSString *)inUnion {
     if ([inUnion rangeOfString:@"\""].location == NSNotFound) {
         if ([inUnion rangeOfString:@"{?="].location == 0) {
             NSString *types = [inUnion substringFromIndex:3];
             types = [types substringToIndex:types.length - 1];
 
-            for (NSDictionary *dict in allStructsFound) {
+            for (NSDictionary *dict in self.allStructsFound) {
                 if ([[dict objectForKey:@"types"] isEqual:types]) {
                     return [dict objectForKey:@"name"];
                 }
@@ -1494,14 +835,13 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
                                   [NSString stringWithFormat:@"(%@)",
                                    [parts substringWithRange:
                                     [result rangeAtIndex:i]]]
-                                                            withString:
-                                  representedUnionFromUnion([NSString
-                                                             stringWithFormat:
-                                                             @"(%@)",
-                                                             [parts
-                                                              substringWithRange:
-                                                              [result rangeAtIndex:
-                                                               i]]])];
+                                                            withString:[self representedUnionFromUnion:[NSString
+                                                                                                        stringWithFormat:
+                                                                                                        @"(%@)",
+                                                                                                        [parts
+                                                                                                         substringWithRange:
+                                                                                                         [result rangeAtIndex:
+                                                                                                          i]]]]];
                     break;
                 }
             }];
@@ -1523,22 +863,8 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
                            usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags,
                                         BOOL *stop) {
                 for (NSUInteger i = 1; i < [result numberOfRanges]; ) {
-                    structParts = [parts
-                                   stringByReplacingOccurrencesOfString:
-                                   [NSString stringWithFormat:@"{%@}",
-                                    [parts substringWithRange:
-                                     [result rangeAtIndex:i]]]
-                                                             withString:
-                                   representedStructFromStruct(
-                                       [NSString
-                                        stringWithFormat:
-                                        @"{%@}",
-                                        [parts
-                                         substringWithRange:
-                                         [result
-                                          rangeAtIndex:
-                                          i]]],
-                                       nil, NO, NO)];
+                    NSString *string = [self representedStructFromStruct:[NSString stringWithFormat:@"{%@}", [parts substringWithRange:[result rangeAtIndex:i]]] inName:nil inIvarList:NO isFinal:NO];
+                    structParts = [parts stringByReplacingOccurrencesOfString: [NSString stringWithFormat:@"{%@}", [parts substringWithRange:[result rangeAtIndex:i]]] withString:string];
                     break;
                 }
             }];
@@ -1546,8 +872,8 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
         }
     }
 
-    if (hasMalformedID(parts)) {
-        while ([parts rangeOfString:@"@"].location != NSNotFound && hasMalformedID(parts)) {
+    if ([ClassDumpDyldHelper hasMalformedIDWithParts:parts]) {
+        while ([parts rangeOfString:@"@"].location != NSNotFound && [ClassDumpDyldHelper hasMalformedIDWithParts:parts]) {
             NSString *trialString = [parts substringFromIndex:[parts rangeOfString:@"@"].location + 2];
 
             if ([trialString rangeOfString:@"\""].location !=
@@ -1568,8 +894,8 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
                 NSUInteger nextlocation = [asubstring rangeOfString:@"\""].location;
                 asubstring = [asubstring substringWithRange:NSMakeRange(0, nextlocation)];
 
-                if ([classesInStructs indexOfObject:asubstring] == NSNotFound) {
-                    [classesInStructs addObject:asubstring];
+                if ([self.classesInStructs indexOfObject:asubstring] == NSNotFound) {
+                    [self.classesInStructs addObject:asubstring];
                 }
 
                 parts = [parts
@@ -1588,7 +914,7 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
     if ([unionName isEqual:@"?"]) {
         wasKnown = 0;
         unionName =
-            [NSString stringWithFormat:@"SCD_Union_%@%d", classID, (int)[allStructsFound count]];
+            [NSString stringWithFormat:@"SCD_Union_%@%d", self.classID, (int)[self.allStructsFound count]];
     }
 
     if ([unionName rangeOfString:@"_"].location == 0) {
@@ -1612,9 +938,7 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
 
         NSString *typ = [brokenParts objectAtIndex:i + 1];
         types = [types stringByAppendingString:[brokenParts objectAtIndex:i + 1]];
-        representation = [representation
-                          stringByAppendingString:[NSString stringWithFormat:@"\t%@ %@;\n",
-                                                   commonTypes(typ, &nam, NO), nam]];
+        representation = [representation stringByAppendingString:[NSString stringWithFormat:@"\t%@ %@;\n", [self commonTyps:typ inName:&nam inIvarList:NO], nam]];
     }
 
     representation = [representation stringByAppendingString:@"} "];
@@ -1622,7 +946,7 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
         [representation stringByAppendingString:[NSString stringWithFormat:@"%@;\n\n", unionName]];
     BOOL found = NO;
 
-    for (NSDictionary *dict in allStructsFound) {
+    for (NSDictionary *dict in self.allStructsFound) {
         if ([[dict objectForKey:@"name"] isEqual:unionName]) {
             found = YES;
             return unionName;
@@ -1632,7 +956,7 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
     }
 
     if (!found) {
-        for (NSDictionary *dict in allStructsFound) {
+        for (NSDictionary *dict in self.allStructsFound) {
             if ([[dict objectForKey:@"types"] isEqual:types] && !wasKnown) {
                 found = YES;
                 return [dict objectForKey:@"name"];
@@ -1642,17 +966,12 @@ NSString * representedUnionFromUnion(NSString *inUnion) {
         }
     }
 
-    [allStructsFound
-     addObject:[NSDictionary dictionaryWithObjectsAndKeys:representation, @"representation",
-                unionName, @"name", types, @"types",
-                nil]];
+    [self.allStructsFound addObject:[NSMutableDictionary dictionaryWithObjectsAndKeys:representation, @"representation", unionName, @"name", types, @"types", nil]];
 
     return unionName != nil ? unionName : inUnion;
 }
 
-/****** Generic Types Parser ******/
-
-NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
+- (NSString *)commonTyps:(NSString *)atype inName:(NSString *__autoreleasing *)inName inIvarList:(BOOL)inIvarList {
     BOOL isRef = NO;
     BOOL isPointer = NO;
     BOOL isCArray = NO;
@@ -1665,25 +984,25 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
     /* Stripping off any extra identifiers to leave only the actual type for parsing later on */
 
     if ([atype rangeOfString:@"o"].location == 0 &&
-        ![commonTypes([atype substringFromIndex:1], nil, NO) isEqual:[atype substringFromIndex:1]]) {
+        ![[self commonTyps:[atype substringFromIndex:1] inName:nil inIvarList:NO] isEqual:[atype substringFromIndex:1]]) {
         isOut = YES;
         atype = [atype substringFromIndex:1];
     }
 
     if ([atype rangeOfString:@"O"].location == 0 &&
-        ![commonTypes([atype substringFromIndex:1], nil, NO) isEqual:[atype substringFromIndex:1]]) {
+        ![[self commonTyps:[atype substringFromIndex:1] inName:nil inIvarList:NO] isEqual:[atype substringFromIndex:1]]) {
         isByCopy = YES;
         atype = [atype substringFromIndex:1];
     }
 
     if ([atype rangeOfString:@"R"].location == 0 &&
-        ![commonTypes([atype substringFromIndex:1], nil, NO) isEqual:[atype substringFromIndex:1]]) {
+        ![[self commonTyps:[atype substringFromIndex:1] inName:nil inIvarList:NO] isEqual:[atype substringFromIndex:1]]) {
         isByRef = YES;
         atype = [atype substringFromIndex:1];
     }
 
     if ([atype rangeOfString:@"V"].location == 0 &&
-        ![commonTypes([atype substringFromIndex:1], nil, NO) isEqual:[atype substringFromIndex:1]]) {
+        ![[self commonTyps:[atype substringFromIndex:1] inName:nil inIvarList:NO] isEqual:[atype substringFromIndex:1]]) {
         isOneWay = YES;
         atype = [atype substringFromIndex:1];
     }
@@ -1692,7 +1011,7 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
         isConst = YES;
         atype = [atype substringFromIndex:2];
         isPointer = YES;
-        shouldImportStructs = 1;
+        self.shouldImportStructs = 1;
     }
 
     if ([atype rangeOfString:@"r"].location == 0) {
@@ -1710,7 +1029,7 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
     }
 
     if ([atype rangeOfString:@"("].location == 0) {
-        atype = representedUnionFromUnion(atype);
+        atype = [self representedUnionFromUnion:atype];
     }
 
     int arrayCount = 0;
@@ -1804,7 +1123,7 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
         [atype rangeOfString:@"{"].location == 0 &&
         [atype rangeOfString:@"?"].location == NSNotFound &&
         [atype rangeOfString:@"\""].location == NSNotFound) {
-        shouldImportStructs = 1;
+        self.shouldImportStructs = 1;
         NSString *writeString = [atype stringByReplacingOccurrencesOfString:@"{" withString:@""];
         writeString = [writeString stringByReplacingOccurrencesOfString:@"}" withString:@""];
         writeString = [writeString stringByReplacingOccurrencesOfString:@"=" withString:@""];
@@ -1821,7 +1140,7 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
 
         BOOL found = NO;
 
-        for (NSDictionary *dict in allStructsFound) {
+        for (NSDictionary *dict in self.allStructsFound) {
             if ([[dict objectForKey:@"name"] isEqual:atype]) {
                 found = YES;
                 break;
@@ -1829,15 +1148,9 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
         }
 
         if (!found) {
-            writeString = [writeString
-                           stringByAppendingString:[NSString
-                                                    stringWithFormat:@"%@Ref;\n\n", representedStructFromStruct(
-                                                        atype, nil, 0, NO)]];
-            [allStructsFound
-             addObject:[NSDictionary dictionaryWithObjectsAndKeys:[NSArray arrayWithObject:@""],
-                        @"types", writeString,
-                        @"representation", atype, @"name",
-                        nil]];
+            NSString *appendingString = [NSString stringWithFormat:@"%@Ref;\n\n", [self representedStructFromStruct:atype inName:nil inIvarList:NO isFinal:NO]];
+            writeString = [writeString stringByAppendingString:appendingString];
+            [self.allStructsFound addObject:[NSMutableDictionary dictionaryWithObjectsAndKeys:[NSArray arrayWithObject:@""], @"types", writeString, @"representation", atype, @"name", nil]];
         }
 
         isRef = YES;
@@ -1846,16 +1159,16 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
 
     if ([atype rangeOfString:@"{"].location == 0) {
         if (inName != nil) {
-            atype = representedStructFromStruct(atype, *inName, inIvarList, YES);
+            atype = [self representedStructFromStruct:atype inName:*inName inIvarList:inIvarList isFinal:inIvarList];
         } else {
-            atype = representedStructFromStruct(atype, nil, inIvarList, YES);
+            atype = [self representedStructFromStruct:atype inName:nil inIvarList:inIvarList isFinal:YES];
         }
 
         if ([atype rangeOfString:@"_"].location == 0) {
             atype = [atype substringFromIndex:1];
         }
 
-        shouldImportStructs = 1;
+        self.shouldImportStructs = 1;
     }
 
     if ([atype rangeOfString:@"b"].location == 0 && atype.length > 1) {
@@ -1872,8 +1185,8 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
     }
 
     if ([atype rangeOfString:@"N"].location == 0 &&
-        ![commonTypes([atype substringFromIndex:1], nil, NO) isEqual:[atype substringFromIndex:1]]) {
-        atype = commonTypes([atype substringFromIndex:1], nil, NO);
+        ![[self commonTyps:[atype substringFromIndex:1] inName:nil inIvarList:NO] isEqual:[atype substringFromIndex:1]]) {
+        atype = [self commonTyps:[atype substringFromIndex:1] inName:nil inIvarList:NO];
         atype = [NSString stringWithFormat:@"inout %@", atype];
     }
 
@@ -2008,17 +1321,7 @@ NSString * commonTypes(NSString *atype, NSString **inName, BOOL inIvarList) {
     return atype;
 }
 
-@implementation NSArray (Safe)
-
-- (nullable id)objectAtSafeIndex:(NSUInteger)safeIndex {
-    return safeIndex < self.count ? self[safeIndex] : nil;
-}
-
-@end
-/****** Methods Parser ******/
-
-NSString * generateMethodLines(Class someclass, BOOL isInstanceMethod,
-                               NSMutableArray *propertiesArray) {
+- (NSString *)generateMethodLinesWithClass:(Class)someclass isInstanceMethod:(BOOL)isInstanceMethod withPropertiesArray:(NSMutableArray *)propertiesArray {
     unsigned int outCount;
 
     NSString *returnString = @"";
@@ -2054,10 +1357,8 @@ NSString * generateMethodLines(Class someclass, BOOL isInstanceMethod,
             returnTypeSameAsProperty
         ? [NSString stringWithFormat:@"\n%@(%@)", startSign, returnTypeSameAsProperty]
         : [NSString
-           stringWithFormat:@"\n%@(%@)", startSign,
-           commonTypes([NSString stringWithCString:returnType
-                                          encoding:NSUTF8StringEncoding],
-                       nil, NO)];
+           stringWithFormat:@"\n%@(%@)", startSign, [self commonTyps:[NSString stringWithCString:returnType
+                                                                                        encoding:NSUTF8StringEncoding] inName:nil inIvarList:NO]];
         free(returnType);
 
         returnString = [returnString stringByAppendingString:startTypes];
@@ -2097,8 +1398,7 @@ NSString * generateMethodLines(Class someclass, BOOL isInstanceMethod,
                         continue;
                     }
 
-                    returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d ", object,
-                                                                          commonTypes([NSString stringWithCString:methodType encoding:NSUTF8StringEncoding], nil, NO), i - 1]];
+                    returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d ", object, [self commonTyps:[NSString stringWithCString:methodType encoding:NSUTF8StringEncoding] inName:nil inIvarList:NO], i - 1]];
                 }
 
                 free(methodType);
@@ -2116,14 +1416,7 @@ NSString * generateMethodLines(Class someclass, BOOL isInstanceMethod,
     return returnString;
 }
 
-typedef void *MSImageRef;
-//#include "substrate.h"
-
-static const struct dyld_all_image_infos * (*my_dyld_get_all_image_infos)(void);
-static MSImageRef (*_MSGetImageByName)(const char *name);
-static void * (*_MSFindSymbol)(MSImageRef ref, const char *name);
-
-static void findDyldGetAllImageInfosSymbol(void) {
+- (void)findDyldGetAllImageInfosSymbol {
     if (dlsym(RTLD_DEFAULT, "_dyld_get_all_image_infos")) {
         my_dyld_get_all_image_infos = (const struct dyld_all_image_infos *(*)(void))dlsym(
             RTLD_DEFAULT, "_dyld_get_all_image_infos");
@@ -2163,11 +1456,7 @@ static void findDyldGetAllImageInfosSymbol(void) {
     }
 }
 
-/****** Recursive file search ******/
-
-static void list_dir(const char *dir_name, BOOL writeToDisk, NSString *outputDir, BOOL getSymbols,
-                     BOOL recursive, BOOL simpleHeader, BOOL skipAlreadyFound,
-                     BOOL skipApplications) {
+- (void)listDirWithName:(const char *)dir_name isWriteToDisk:(BOOL)writeToDisk outputDir:(NSString *)outputDir isGetSymbols:(BOOL)getSymbols isRecursive:(BOOL)recursive isSimpleHeader:(BOOL)simpleHeader isSkipAlreadyFound:(BOOL)skipAlreadyFound isSkipApplications:(BOOL)skipApplications {
     DIR *d;
 
     d = opendir(dir_name);
@@ -2247,12 +1536,10 @@ static void list_dir(const char *dir_name, BOOL writeToDisk, NSString *outputDir
                         skipString = [skipString stringByReplacingOccurrencesOfString:@".app" withString:@""];
 
                         if ([skipString isEqualToString:[imageToPass lastPathComponent]]) {
-                            parseImage((char *)[imageToPass UTF8String], writeToDisk, outputDir, getSymbols,
-                                       recursive, YES, simpleHeader, skipAlreadyFound, skipApplications, 0);
+                            [self parseImage:(char *)[imageToPass UTF8String] isWriteToDisk:writeToDisk outputDir:outputDir isGetSymbols:getSymbols isRecursive:recursive isBuildOriginalDirs:YES isSimpleHeader:simpleHeader isSkipAlreadyFound:skipAlreadyFound isSkipApplications:skipApplications percent:0];
                         }
                     } else {
-                        parseImage((char *)[imageToPass UTF8String], writeToDisk, outputDir, getSymbols, recursive,
-                                   YES, simpleHeader, skipAlreadyFound, skipApplications, 0);
+                        [self parseImage:(char *)[imageToPass UTF8String] isWriteToDisk:writeToDisk outputDir:outputDir isGetSymbols:getSymbols isRecursive:recursive isBuildOriginalDirs:YES isSimpleHeader:simpleHeader isSkipAlreadyFound:skipAlreadyFound isSkipApplications:skipApplications percent:0];
                     }
                 }
             }
@@ -2270,8 +1557,7 @@ static void list_dir(const char *dir_name, BOOL writeToDisk, NSString *outputDir
                     exit(EXIT_FAILURE);
                 }
 
-                list_dir(path, writeToDisk, outputDir, getSymbols, recursive, simpleHeader,
-                         skipAlreadyFound, skipApplications);
+                [self listDirWithName:path isWriteToDisk:writeToDisk outputDir:outputDir isGetSymbols:getSymbols isRecursive:recursive isSimpleHeader:simpleHeader isSkipAlreadyFound:skipAlreadyFound isSkipApplications:skipApplications];
             }
         }
     }
@@ -2279,11 +1565,7 @@ static void list_dir(const char *dir_name, BOOL writeToDisk, NSString *outputDir
     closedir(d);
 }
 
-/****** The actual job ******/
-
-int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbols,
-               BOOL isRecursive, BOOL buildOriginalDirs, BOOL simpleHeader, BOOL skipAlreadyFound,
-               BOOL skipApplications, int percent) {
+- (NSInteger)parseImage:(char *)image isWriteToDisk:(BOOL)writeToDisk outputDir:(NSString *)outputDir isGetSymbols:(BOOL)getSymbols isRecursive:(BOOL)isRecursive isBuildOriginalDirs:(BOOL)buildOriginalDirs isSimpleHeader:(BOOL)simpleHeader isSkipAlreadyFound:(BOOL)skipAlreadyFound isSkipApplications:(BOOL)skipApplications percent:(NSInteger)percent {
     if (!image) {
         return 3;
     }
@@ -2310,15 +1592,10 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
         }
     }
 
-    if (isIOS11 && strstr(image, "SpringBoardUI")) {
-        dlopen("/System/Library/PrivateFrameworks/SearchUI.framework/SearchUI",
-               RTLD_NOW);  // rdar://problem/26143166
-    }
-
     NSString *imageAsNSString = [[NSString alloc] initWithCString:image
                                                          encoding:NSUTF8StringEncoding];
 
-    for (NSString *forbiddenPath in forbiddenPaths) {
+    for (NSString *forbiddenPath in self.forbiddenPaths) {
         if ([imageAsNSString rangeOfString:forbiddenPath].location != NSNotFound) {
             NSLog(@"Image %@ cannot be parsed due to known crashing issues.", imageAsNSString);
             return 5;
@@ -2345,7 +1622,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
 
     @autoreleasepool {
-        if ([allImagesProcessed containsObject:[NSString stringWithCString:image
+        if ([self.allImagesProcessed containsObject:[NSString stringWithCString:image
                                                                   encoding:NSUTF8StringEncoding]]) {
             return 5;
         }
@@ -2361,7 +1638,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
         NSString *containedImage = [[NSString stringWithCString:image encoding:NSUTF8StringEncoding]
                                     stringByAppendingString:[NSString stringWithFormat:@"/%@", imageEnd]];
 
-        if ([allImagesProcessed containsObject:containedImage]) {
+        if ([self.allImagesProcessed containsObject:containedImage]) {
             return 5;
         }
     }
@@ -2372,7 +1649,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
     BOOL isExec = NO;
 
     if (dlerror()) {
-        if (fileExistsOnDisk(image)) {
+        if ( fileExistsOnDisk(image)) {
             isExec = isMachOExecutable(image);
         }
     }
@@ -2387,7 +1664,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
             ref = dlopen(image, RTLD_LAZY);
             CDLog(@"Did dlopen %s", image);
         } else {
-            if (!isExec || shouldDLopen32BitExecutables) {
+            if (!isExec || self.shouldDLopen32BitExecutables) {
                 if (!dlopenError ||
                     (dlopenError && !strstr(dlopenError, "no matching architecture in universal wrapper") &&
                      !strstr(dlopenError, "out of address space") &&
@@ -2425,7 +1702,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                         opened = NO;
                     }
 
-                    if (opened && (!isExec || shouldDLopen32BitExecutables)) {
+                    if (opened && (!isExec || self.shouldDLopen32BitExecutables)) {
                         ref = dlopen(image, RTLD_LAZY);
                     }
                 }
@@ -2434,12 +1711,12 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
     }
 
     if (image != nil &&
-        ![allImagesProcessed containsObject:[NSString stringWithCString:image encoding:2]] &&
+        ![self.allImagesProcessed containsObject:[NSString stringWithCString:image encoding:2]] &&
         ((dlopenError &&
           (strstr(dlopenError, "no matching architecture in universal wrapper") ||
            strstr(dlopenError, "not macOS") || strstr(dlopenError, "out of address space") ||
            strstr(dlopenError, "mach-o, but wrong architecture"))) ||
-         (isExec && !shouldDLopen32BitExecutables))) {
+         (isExec && !self.shouldDLopen32BitExecutables))) {
         @autoreleasepool {
             /*if (fileExistsOnDisk(image) && isExec){
                NSString *exec=[NSString stringWithFormat:@"/usr/bin/ldid -e %s >
@@ -2475,11 +1752,11 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                 tryWithLib = [tryWithLib stringByAppendingString:@" -u"];
             }
 
-            if (addHeadersFolder) {
+            if (self.addHeadersFolder) {
                 tryWithLib = [tryWithLib stringByAppendingString:@" -h"];
             }
 
-            if (inDebug) {
+            if (self.isDebug) {
                 tryWithLib = [tryWithLib stringByAppendingString:@" -D"];
             }
 
@@ -2487,12 +1764,12 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                 tryWithLib = [tryWithLib stringByAppendingString:@" -r"];
             }
 
-            if (onlyOneClass) {
+            if (self.onlyOneClass) {
                 tryWithLib = [tryWithLib
-                              stringByAppendingString:[NSString stringWithFormat:@" -j %@", onlyOneClass]];
+                              stringByAppendingString:[NSString stringWithFormat:@" -j %@", self.onlyOneClass]];
             }
 
-            [allImagesProcessed addObject:[NSString stringWithCString:image encoding:2]];
+            [self.allImagesProcessed addObject:[NSString stringWithCString:image encoding:2]];
             int (*_my_system)(const char *) = (int (*)(const char *))dlsym(RTLD_DEFAULT, "system");
             _my_system([tryWithLib UTF8String]);
         }
@@ -2510,7 +1787,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
         return 3;
     }
 
-    if (image != nil && [allImagesProcessed containsObject:[NSString stringWithCString:image
+    if (image != nil && [self.allImagesProcessed containsObject:[NSString stringWithCString:image
                                                                               encoding:2]]) {
         return 5;
     }
@@ -2526,11 +1803,9 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
     if (count) {
         if (percent) {
-            printf("  Dumping " BOLDWHITE "%s" RESET "...(%d classes) (%d%%) %s \n", image, count,
-                   percent, [print_free_memory() UTF8String]);
+            printf("  Dumping " "%s" "...(%d classes) (%ld%%) %s \n", image, count, percent, [print_free_memory() UTF8String]);
         } else {
-            printf("  Dumping " BOLDWHITE "%s" RESET "...(%d classes) %s \n", image, count,
-                   [print_free_memory() UTF8String]);
+            printf("  Dumping " "%s" "...(%d classes) %s \n", image, count, [print_free_memory() UTF8String]);
         }
     }
 
@@ -2539,17 +1814,17 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
         outputDir = [outputDir substringToIndex:outputDir.length - 1];
 
     BOOL hasWrittenCopyright = NO;
-    allStructsFound = nil;
-    allStructsFound = [NSMutableArray array];
-    classesInStructs = nil;
-    classesInStructs = [NSMutableArray array];
+    self.allStructsFound = nil;
+    self.allStructsFound = [NSMutableArray array];
+    self.classesInStructs = nil;
+    self.classesInStructs = [NSMutableArray array];
 
     NSMutableArray *protocolsAdded = [NSMutableArray array];
 
     NSString *imageName = [[NSString stringWithCString:image
                                               encoding:NSUTF8StringEncoding] lastPathComponent];
     NSString *fullImageNameInNS = [NSString stringWithCString:image encoding:NSUTF8StringEncoding];
-    [allImagesProcessed addObject:fullImageNameInNS];
+    [self.allImagesProcessed addObject:fullImageNameInNS];
 
     NSString *seeIfIsBundleType = [fullImageNameInNS stringByDeletingLastPathComponent];
     NSString *lastComponent = [seeIfIsBundleType lastPathComponent];
@@ -2562,7 +1837,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
         isFramework = YES;
     }
 
-    NSString *headersFolder = addHeadersFolder ? @"/Headers" : @"";
+    NSString *headersFolder = self.addHeadersFolder ? @"/Headers" : @"";
     NSString *writeDir =
         buildOriginalDirs
     ? (isFramework
@@ -2572,7 +1847,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
     writeDir = [writeDir stringByReplacingOccurrencesOfString:@"///" withString:@"/"];
     writeDir = [writeDir stringByReplacingOccurrencesOfString:@"//" withString:@"/"];
 
-    [processedImages addObject:[NSString stringWithCString:image encoding:NSUTF8StringEncoding]];
+    [self.processedImages addObject:[NSString stringWithCString:image encoding:NSUTF8StringEncoding]];
     CDLog(@"Beginning class loop (%d classed) for %s", count, image);
     NSMutableString *classesToImport = [[NSMutableString alloc] init];
 
@@ -2580,10 +1855,10 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
     for (unsigned i = 0; i < count; i++) {
         @autoreleasepool {
-            classesInClass = nil;
-            classesInClass = [NSMutableArray array];
+            self.classesInClass = nil;
+            self.classesInClass = [NSMutableArray array];
             NSMutableArray *inlineProtocols = [NSMutableArray array];
-            shouldImportStructs = 0;
+            self.shouldImportStructs = 0;
 
             if (skipAlreadyFound &&
                 [[NSFileManager defaultManager]
@@ -2594,8 +1869,8 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
             BOOL canGetSuperclass = YES;
             NSString *classNameNSToRelease = [[NSString alloc] initWithCString:names[i]
                                                                       encoding:NSUTF8StringEncoding];
-
-            if ([forbiddenClasses indexOfObject:classNameNSToRelease] != NSNotFound) {
+            
+            if ([self.forbiddenClasses containsObject:classNameNSToRelease]) {
                 continue;
             }
 
@@ -2604,7 +1879,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                 continue;
             }
 
-            if (onlyOneClass && ![classNameNSToRelease isEqual:onlyOneClass]) {
+            if (self.onlyOneClass && ![classNameNSToRelease isEqual:self.onlyOneClass]) {
                 continue;
             }
 
@@ -2624,7 +1899,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
             while ([classNameNS rangeOfString:@"_"].location == 0)
                 classNameNS = [classNameNS substringFromIndex:1];
-            classID = [classNameNS substringToIndex:2];
+            self.classID = [classNameNS substringToIndex:2];
             Class currentClass = nil;
 
             currentClass = objc_getClass(names[i]);
@@ -2767,7 +2042,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                 }
 
                 [protocolsAdded addObject:protocolNSString];
-                NSString *protocolHeader = buildProtocolFile(protocol);
+                NSString *protocolHeader = [self buildProtocolFile:protocol];
 
                 if (strcmp(names[i], protocolName) == 0) {
                     [dumpString appendString:protocolHeader];
@@ -2825,10 +2100,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                     NSString *ivarTypeString = NULL;
 
                     if (ivarType) {
-                        ivarTypeString = commonTypes([NSString stringWithCString:ivarType
-                                                                        encoding:NSUTF8StringEncoding],
-                                                     &ivarNameNS, YES);
-
+                        ivarTypeString = [self commonTyps:[NSString stringWithCString:ivarType encoding:NSUTF8StringEncoding] inName:&ivarNameNS inIvarList:YES];
                         if ([ivarTypeString rangeOfString:@"@\""].location != NSNotFound) {
                             ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"@\""
                                                                                        withString:@""];
@@ -2837,15 +2109,15 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                             NSString *classFoundInIvars = [ivarTypeString stringByReplacingOccurrencesOfString:@"*"
                                                                                                     withString:@""];
 
-                            if (![classesInClass containsObject:classFoundInIvars]) {
+                            if (![self.classesInClass containsObject:classFoundInIvars]) {
                                 if ([classFoundInIvars rangeOfString:@"<"].location != NSNotFound) {
                                     NSUInteger firstOpening = [classFoundInIvars rangeOfString:@"<"].location;
 
                                     if (firstOpening != 0) {
                                         NSString *classToAdd = [classFoundInIvars substringToIndex:firstOpening];
 
-                                        if (![classesInClass containsObject:classToAdd]) {
-                                            [classesInClass addObject:classToAdd];
+                                        if (![self.classesInClass containsObject:classToAdd]) {
+                                            [self.classesInClass addObject:classToAdd];
                                         }
                                     }
 
@@ -2861,7 +2133,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                                         [inlineProtocols addObject:protocolToAdd];
                                     }
                                 } else {
-                                    [classesInClass addObject:classFoundInIvars];
+                                    [self.classesInClass addObject:classFoundInIvars];
                                 }
                             }
 
@@ -2925,10 +2197,8 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                     printf("\n stringWithCString propname empty \n");
                 }
 
-                NSString *newString = propertyLineGenerator(
-                    [NSString stringWithCString:attrs encoding:NSUTF8StringEncoding],
-                    [NSString stringWithCString:propname encoding:NSUTF8StringEncoding]);
-
+                NSString *newString = [self generatePropertyLineWithAttributes:[NSString stringWithCString:attrs encoding:NSUTF8StringEncoding] withName:[NSString stringWithCString:propname encoding:NSUTF8StringEncoding]];
+                
                 if ([propertiesString rangeOfString:newString].location == NSNotFound) {
                     propertiesString =
                         [propertiesString stringByAppendingString:newString];
@@ -2984,13 +2254,11 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
             // Gather All Strings
             [dumpString appendString:propertiesString];
-            [dumpString
-             appendString:generateMethodLines(object_getClass(currentClass), NO, nil)];
-            [dumpString appendString:generateMethodLines(currentClass, YES,
-                                                         propertiesArrayFromString(propertiesString))];
+            [dumpString appendString:[self generateMethodLinesWithClass:object_getClass(currentClass) isInstanceMethod:NO withPropertiesArray:nil]];
+            [dumpString appendString:[self generateMethodLinesWithClass:currentClass isInstanceMethod:YES withPropertiesArray:[self generatePropertiesArrayFromString:propertiesString]]];
             [dumpString appendString:@"\n@end\n\n"];
 
-            if (shouldImportStructs && writeToDisk) {
+            if (self.shouldImportStructs && writeToDisk) {
                 NSUInteger firstImport = [dumpString rangeOfString:@"#import"].location != NSNotFound
                 ? [dumpString rangeOfString:@"#import"].location
                 : [dumpString rangeOfString:@"@interface"].location;
@@ -3001,23 +2269,23 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                 [dumpString insertString:structImport atIndex:firstImport];
             }
 
-            if (writeToDisk && [classesInClass count] > 0) {
+            if (writeToDisk && [self.classesInClass count] > 0) {
                 if (!names[i]) {
                     printf("\n stringWithCString names[i] empty \n");
                 }
 
-                [classesInClass removeObject:[NSString stringWithCString:names[i]
+                [self.classesInClass removeObject:[NSString stringWithCString:names[i]
                                                                 encoding:NSUTF8StringEncoding]];
 
-                if ([classesInClass count] > 0) {
+                if ([self.classesInClass count] > 0) {
                     NSUInteger firstInteface = [dumpString rangeOfString:@"@interface"].location;
                     NSMutableString *classesFoundToAdd = [[NSMutableString alloc] init];
                     [classesFoundToAdd appendString:@"@class "];
 
-                    for (int f = 0; f < classesInClass.count; f++) {
-                        NSString *classFound = [classesInClass objectAtIndex:f];
+                    for (int f = 0; f < self.classesInClass.count; f++) {
+                        NSString *classFound = [self.classesInClass objectAtIndex:f];
 
-                        if (f < classesInClass.count - 1) {
+                        if (f < self.classesInClass.count - 1) {
                             [classesFoundToAdd appendString:[NSString stringWithFormat:@"%@, ", classFound]];
                         } else {
                             [classesFoundToAdd appendString:[NSString stringWithFormat:@"%@;", classFound]];
@@ -3076,10 +2344,8 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
     // END OF PER-CLASS LOOP
 
-    if (actuallyProcesssedCount == 0 && onlyOneClass) {
-        printf("\r\n" BOLDWHITE "\t\tlibclassdump-dyld:" RESET " Class \"" BOLDWHITE "%s" RESET
-               "\" not found" RESET " in %s\r\n\r\n",
-               [onlyOneClass UTF8String], image);
+    if (actuallyProcesssedCount == 0 && self.onlyOneClass) {
+        printf("\r\n" "\t\tlibclassdump-dyld:" " Class \"" "%s" "\" not found" " in %s\r\n\r\n", [self.onlyOneClass UTF8String], image);
     }
 
     if (writeToDisk && classesToImport.length > 2) {
@@ -3101,7 +2367,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
     // Compose FrameworkName-Structs.h file
 
     @autoreleasepool {
-        if ([allStructsFound count] > 0) {
+        if ([self.allStructsFound count] > 0) {
             NSString *structsString = @"";
 
             if (writeToDisk) {
@@ -3112,10 +2378,10 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
             NSError *writeError;
 
-            if ([classesInStructs count] > 0) {
+            if ([self.classesInStructs count] > 0) {
                 structsString = [structsString stringByAppendingString:@"\n@class "];
 
-                for (NSString *string in classesInStructs) {
+                for (NSString *string in self.classesInStructs) {
                     structsString = [structsString
                                      stringByAppendingString:[NSString stringWithFormat:@"%@, ", string]];
                 }
@@ -3125,7 +2391,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                 structsString = [structsString stringByAppendingString:@";\n\n"];
             }
 
-            for (NSDictionary *dict in allStructsFound) {
+            for (NSDictionary *dict in self.allStructsFound) {
                 structsString = [structsString
                                  stringByAppendingString:[dict objectForKey:@"representation"]];
             }
@@ -3162,7 +2428,7 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
         struct mach_header_64 *mh64 = nil;
 
         if (!my_dyld_get_all_image_infos) {
-            findDyldGetAllImageInfosSymbol();
+            [self findDyldGetAllImageInfosSymbol];
         }
 
         dyld_all_image_infos = my_dyld_get_all_image_infos();
@@ -3411,390 +2677,84 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
     return 1;
 }
 
-/****** main ******/
+#pragma mark - Getter & Setter
 
-int main(int argc, char **argv, char **envp) {
-    isIOS11 = [[[NSProcessInfo processInfo] operatingSystemVersionString] rangeOfString:@"Version 11"]
-        .location == 0 ||
-        [[[NSProcessInfo processInfo] operatingSystemVersionString] rangeOfString:@"Version 12"]
-        .location == 0;
-
-    @autoreleasepool {
-        char *image = nil;
-        BOOL writeToDisk = NO;
-        BOOL buildOriginalDirs = NO;
-        BOOL recursive = NO;
-        BOOL simpleHeader = NO;
-        BOOL getSymbols = NO;
-        BOOL skipAlreadyFound = NO;
-        BOOL isSharedCacheRecursive = NO;
-        BOOL skipApplications = YES;
-
-        NSString *outputDir = nil;
-        NSString *sourceDir = nil;
-
-        // Check and apply arguments
-
-        NSString *currentDir = [[[NSProcessInfo processInfo] environment] objectForKey:@"PWD"];
-        NSMutableArray *arguments = [[NSProcessInfo processInfo] arguments].mutableCopy;
-        [arguments addObject:@"-o"];
-        [arguments addObject:@"/Users/jh/Desktop/dump"];
-        [arguments addObject:@"-c"];
-        [arguments addObject:@"-D"];
-        NSMutableArray *argumentsToUse = [arguments mutableCopy];
-        [argumentsToUse removeObjectAtIndex:0];
-
-        NSUInteger argCount = [arguments count];
-
-        if (argCount < 2) {
-            printHelp();
-            exit(0);
-        }
-
-        for (NSString *arg in arguments) {
-            if ([arg isEqual:@"-D"]) {
-                inDebug = 1;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-o"]) {
-                NSUInteger argIndex = [arguments indexOfObject:arg];
-
-                if (argIndex == argCount - 1) {
-                    printHelp();
-                    exit(0);
-                }
-
-                outputDir = [arguments objectAtIndex:argIndex + 1];
-
-                // outputDir=[NSString stringWithFormat:@"\"%@\"",outputDir];
-                if ([outputDir rangeOfString:@"-"].location == 0) {
-                    printHelp();
-                    exit(0);
-                }
-
-                writeToDisk = YES;
-                [argumentsToUse removeObject:arg];
-                [argumentsToUse removeObject:outputDir];
-            }
-
-            if ([arg isEqual:@"-j"]) {
-                NSUInteger argIndex = [arguments indexOfObject:arg];
-
-                if (argIndex == argCount - 1) {
-                    printHelp();
-                    exit(0);
-                }
-
-                onlyOneClass = [arguments objectAtIndex:argIndex + 1];
-
-                if ([onlyOneClass rangeOfString:@"-"].location == 0) {
-                    printHelp();
-                    exit(0);
-                }
-
-                [argumentsToUse removeObject:arg];
-                [argumentsToUse removeObject:onlyOneClass];
-            }
-
-            if ([arg isEqual:@"-r"]) {
-                NSUInteger argIndex = [arguments indexOfObject:arg];
-
-                if (argIndex == argCount - 1) {
-                    printHelp();
-                    exit(0);
-                }
-
-                sourceDir = [arguments objectAtIndex:argIndex + 1];
-                BOOL isDir;
-
-                if ([sourceDir rangeOfString:@"-"].location == 0 ||
-                    ![[NSFileManager defaultManager] fileExistsAtPath:sourceDir] ||
-                    ([[NSFileManager defaultManager] fileExistsAtPath:sourceDir isDirectory:&isDir] &&
-                     !isDir)) {
-                    printf("classdump-dyld: error: Directory %s does not exist\n", [sourceDir UTF8String]);
-                    exit(0);
-                }
-
-                recursive = YES;
-                [argumentsToUse removeObject:arg];
-                [argumentsToUse removeObject:sourceDir];
-            }
-
-            if ([arg isEqual:@"-a"]) {
-                skipApplications = NO;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-e"]) {
-                shouldDLopen32BitExecutables = YES;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-s"]) {
-                skipAlreadyFound = YES;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-b"]) {
-                buildOriginalDirs = YES;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-g"]) {
-                getSymbols = YES;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-u"]) {
-                simpleHeader = YES;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-c"]) {
-                isSharedCacheRecursive = YES;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-h"]) {
-                addHeadersFolder = YES;
-                [argumentsToUse removeObject:arg];
-            }
-
-            if ([arg isEqual:@"-x"]) {
-                NSUInteger argIndex = [arguments indexOfObject:arg];
-
-                if (argIndex == argCount - 1) {
-                    printHelp();
-                    exit(0);
-                }
-
-                NSUInteger nextEntriesCount = [arguments count] - argIndex - 1;
-                int next = 1;
-
-                while (nextEntriesCount) {
-                    NSString *forbiddenClassAdd = [arguments objectAtIndex:argIndex + next];
-                    next++;
-                    nextEntriesCount--;
-
-                    if ([forbiddenClassAdd rangeOfString:@"-"].location == 0) {
-                        nextEntriesCount = 0;
-                        break;
-                    }
-
-                    if (!forbiddenClasses) {
-                        generateForbiddenClassesArray(recursive);
-                    }
-
-                    [forbiddenClasses addObject:forbiddenClassAdd];
-                    [argumentsToUse removeObject:forbiddenClassAdd];
-                }
-
-                [argumentsToUse removeObject:arg];
-            }
-        }
-
-        if (onlyOneClass && (recursive || isSharedCacheRecursive)) {
-            printHelp();
-            exit(0);
-        }
-
-        if (addHeadersFolder && !outputDir) {
-            printHelp();
-            exit(0);
-        }
-
-        if ((recursive || isSharedCacheRecursive) && !outputDir) {
-            printHelp();
-            exit(0);
-        }
-
-        if ((recursive || isSharedCacheRecursive) && [argumentsToUse count] > 0) {
-            printHelp();
-            exit(0);
-        }
-
-        if ([argumentsToUse count] > 2) {
-            printHelp();
-            exit(0);
-        }
-
-        if (!recursive && !isSharedCacheRecursive) {
-            if ([argumentsToUse count] > 1) {
-                printHelp();
-                exit(0);
-            } else {
-                if ([argumentsToUse count] > 0) {
-                    image = (char *)[[argumentsToUse objectAtIndex:0] UTF8String];
-                } else {
-                    printHelp();
-                    exit(0);
-                }
-            }
-        }
-
-        if (recursive && isSharedCacheRecursive) {
-            skipAlreadyFound = YES;
-        }
-
-        // Begin
-
-        int RESULT = 1;
-
-        allImagesProcessed = [NSMutableArray array];
-
-        if (!forbiddenClasses) {
-            generateForbiddenClassesArray(recursive);
-        }
-
-        generateForbiddenPathsArray(recursive);
-
-        NSString *inoutputDir = outputDir;
-
-        if (isSharedCacheRecursive) {
-#if TARGET_CPU_ARM64
-            const char *filename = "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e";
-#else
-            const char *filename = "/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_x86_64";
-#endif
-            FILE *fp = fopen(filename, "r");
-
-            fclose(fp);
-            printf("\n   Now dumping " BOLDWHITE "%s..." RESET "\n\n", filename);
-            // Thanks to DHowett & KennyTM~ for dyld_shared_cache listing codes
-            struct stat filebuffer;
-            stat(filename, &filebuffer);
-            unsigned long long filesize = filebuffer.st_size;
-            //2031403008
-            //            unsigned long long leftovers = 0;
-            //            unsigned long long originalSize = filesize;
-            //            if (filesize > SIZE_LIMIT){
-            //                leftovers = filesize - SIZE_LIMIT;
-            //                filesize = SIZE_LIMIT;
-            //            }
-            int fd = open(filename, O_RDONLY);
-            _cacheData = (uint8_t *)mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
-            _cacheHead = (struct dyld_cache_header *)_cacheData;
-            uint64_t curoffset = _cacheHead->imagesOffset;
-
-            for (unsigned i = 0; i < _cacheHead->imagesCount; ++i) {
-                uint64_t fo = *(uint64_t *)(_cacheData + curoffset + 24);
-                curoffset += 32;
-                char *imageInCache = (char *)_cacheData + fo;
-
-                // a few blacklisted frameworks that crash
-                if (
-                    strstr(imageInCache, "Powerlog") || strstr(imageInCache, "Parsec") ||
-                    strstr(imageInCache, "WebKitLegacy") || strstr(imageInCache, "VisualVoicemail") ||
-                    strstr(imageInCache, "/System/Library/Frameworks/CoreGraphics.framework/Resources/") ||
-                    strstr(imageInCache, "JavaScriptCore.framework") ||
-                    strstr(imageInCache, "GameKitServices.framework") ||
-                    strstr(imageInCache, "MPSImage.framework") ||
-                    strstr(imageInCache, "VectorKit")
-                    ) {
-                    continue;
-                }
-
-                NSStringCompareOptions opts = 0;
-                NSMutableString *imageToNSString =
-                    [[NSMutableString alloc] initWithCString:imageInCache encoding:NSUTF8StringEncoding];
-                [imageToNSString replaceOccurrencesOfString:@"///"
-                                                 withString:@"/"
-                                                    options:opts
-                                                      range:NSMakeRange(0, [imageToNSString length])];
-                [imageToNSString replaceOccurrencesOfString:@"//"
-                                                 withString:@"/"
-                                                    options:opts
-                                                      range:NSMakeRange(0, [imageToNSString length])];
-                double prct = (double)((double)i / (double)_cacheHead->imagesCount) * (double)100;
-                CDLog(@"Current Image %@", imageToNSString);
-                parseImage((char *)[imageToNSString UTF8String], writeToDisk, outputDir, getSymbols, YES,
-                           YES, simpleHeader, skipAlreadyFound, skipApplications, (int)prct);
-            }
-
-            munmap(_cacheData, filesize);
-            close(fd);
-            printf("\n   Finished dumping " BOLDWHITE "%s..." RESET "\n\n", filename);
-        }
-
-        if (recursive) {
-            NSFileManager *fileman = [[NSFileManager alloc] init];
-            NSError *error = nil;
-            [fileman  createDirectoryAtPath:outputDir
-                withIntermediateDirectories:YES
-                                 attributes:nil
-                                      error:&error];
-
-            if (error != nil) {
-                NSLog(@"Could not create directory %@. Check permissions.", outputDir);
-                NSLog(@"error %lx", error.code);
-                exit(EXIT_FAILURE);
-            }
-
-            [fileman changeCurrentDirectoryPath:currentDir];
-            [fileman changeCurrentDirectoryPath:outputDir];
-            outputDir = [fileman currentDirectoryPath];
-            [fileman changeCurrentDirectoryPath:currentDir];
-            [fileman changeCurrentDirectoryPath:sourceDir];
-            sourceDir = [fileman currentDirectoryPath];
-            const char *dir_name = [sourceDir UTF8String];
-            list_dir(dir_name, writeToDisk, outputDir, getSymbols, recursive, simpleHeader,
-                     skipAlreadyFound, skipApplications);
-        } else {
-            if (image) {
-                NSError *error = nil;
-                NSFileManager *fileman = [[NSFileManager alloc] init];
-                NSString *imageString = nil;
-
-                if (outputDir) {
-                    [fileman  createDirectoryAtPath:outputDir
-                        withIntermediateDirectories:YES
-                                         attributes:nil
-                                              error:&error];
-
-                    if (error) {
-                        NSLog(@"Could not create directory %@. Check permissions.", outputDir);
-                        exit(EXIT_FAILURE);
-                    }
-
-                    [fileman changeCurrentDirectoryPath:currentDir];
-                    [fileman changeCurrentDirectoryPath:outputDir];
-                    outputDir = [fileman currentDirectoryPath];
-
-                    imageString = [NSString stringWithCString:image encoding:NSUTF8StringEncoding];
-
-                    if ([imageString rangeOfString:@"/"].location != 0) {  // not an absolute path
-                        [fileman changeCurrentDirectoryPath:currentDir];
-                        NSString *append = [imageString lastPathComponent];
-                        NSString *source = [imageString stringByDeletingLastPathComponent];
-                        [fileman changeCurrentDirectoryPath:source];
-                        imageString = [[fileman currentDirectoryPath]
-                                       stringByAppendingString:[NSString stringWithFormat:@"/%@", append]];
-                        image = (char *)[imageString UTF8String];
-                    }
-                }
-
-                RESULT = parseImage(image, writeToDisk, outputDir, getSymbols, NO, buildOriginalDirs,
-                                    simpleHeader, NO, skipApplications, 0);
-            }
-        }
-
-        if (RESULT) {
-            if (RESULT == 4) {
-                printf("  %s cannot be dumped with classdump-dyld.\n", image);
-                exit(1);
-            } else if (RESULT == 2) {
-                printf("  %s does not implement any classes.\n", image);
-                exit(1);
-            } else if (RESULT == 3) {
-                exit(1);
-            } else {
-                if (writeToDisk) {
-                    printf("  Done. Check \"%s\" directory.\n", [inoutputDir UTF8String]);
-                }
-            }
-        }
-    }
-
-    exit(0);
+- (NSSet<NSString *> *)forbiddenClasses {
+    return self.mutableForbiddenClasses;
 }
+
+- (NSSet<NSString *> *)forbiddenPaths {
+    return self.mutableForbiddenPaths;
+}
+
+- (NSMutableSet<NSString *> *)mutableForbiddenClasses {
+    if (_mutableForbiddenClasses == nil) {
+        _mutableForbiddenClasses = [NSMutableSet set];
+        // UINSServiceViewController requires Marzipan
+        [_mutableForbiddenClasses addObject:@"UINSServiceViewController"];
+        [_mutableForbiddenClasses addObject:@"AWBAlgorithm"];
+    }
+    return _mutableForbiddenClasses;
+}
+
+- (NSMutableSet<NSString *> *)mutableForbiddenPaths {
+    if (_mutableForbiddenPaths == nil) {
+        _mutableForbiddenPaths = [NSMutableSet set];
+        [_mutableForbiddenPaths addObject:@"/usr/bin"];
+        [_mutableForbiddenPaths addObject:@"/Developer"];
+        [_mutableForbiddenPaths addObject:@"/Library/Switches"];
+        [_mutableForbiddenPaths addObject:@"SBSettings"];
+        [_mutableForbiddenPaths addObject:@"Activator"];
+        [_mutableForbiddenPaths addObject:@"launchd"];
+
+
+        [_mutableForbiddenPaths addObject:@"AGXMetal"];
+        [_mutableForbiddenPaths addObject:@"PhotosUI"];
+        [_mutableForbiddenPaths addObject:@"AccessibilityUIService"];
+        [_mutableForbiddenPaths addObject:@"CoreSuggestionsInternals"];
+        [_mutableForbiddenPaths addObject:@"GameCenterPrivateUI"];
+        [_mutableForbiddenPaths addObject:@"GameCenterUI"];
+        [_mutableForbiddenPaths addObject:@"LegacyGameKit"];
+        [_mutableForbiddenPaths addObject:@"IMAP.framework"];
+        [_mutableForbiddenPaths addObject:@"POP.framework"];
+        [_mutableForbiddenPaths addObject:@"Parsec"];
+        [_mutableForbiddenPaths addObject:@"ZoomTouch"];
+        [_mutableForbiddenPaths addObject:@"VisualVoicemailUsage"];
+
+        if (self.isRecursive) {
+            [_mutableForbiddenPaths addObject:@"braille"];
+            [_mutableForbiddenPaths addObject:@"QuickSpeak"];
+            [_mutableForbiddenPaths addObject:@"HearingAidUIServer"];
+            [_mutableForbiddenPaths addObject:@"Mail.siriUIBundle"];
+            [_mutableForbiddenPaths addObject:@"TTSPlugins"];
+        }
+
+        [_mutableForbiddenPaths addObject:@"AppAnalytics"];
+        [_mutableForbiddenPaths addObject:@"CoreKnowledge"];
+
+        // m1
+        [_mutableForbiddenPaths addObject:@"/System/iOSSupport"];
+    //    [forbiddenPaths addObject:@"UIKitMacHelper.framework"];
+        [_mutableForbiddenPaths addObject:@"ContactsUIMacHelper.framework"];
+        [_mutableForbiddenPaths addObject:@"AVKitMacHelper.framework"];
+    //    [forbiddenPaths addObject:@"FinderKit.framework"];
+        [_mutableForbiddenPaths addObject:@"Mail.framework"];
+        [_mutableForbiddenPaths addObject:@"MessageUIMacHelper.framework"];
+        [_mutableForbiddenPaths addObject:@"PassKitMacHelper.framework"];
+        [_mutableForbiddenPaths addObject:@"ReplayKitMacHelper.framework"];
+        [_mutableForbiddenPaths addObject:@"StoreKitMacHelper.framework"];
+        [_mutableForbiddenPaths addObject:@"libcrypto.dylib"];
+        [_mutableForbiddenPaths addObject:@"libssl.dylib"];
+
+        [_mutableForbiddenPaths addObject:@"/System/Library/Extensions"];
+
+        [_mutableForbiddenPaths addObject:@"/System/Library/QuickLook"];
+        
+        [_mutableForbiddenPaths addObject:@"ActionKit.framework"];
+        [_mutableForbiddenPaths addObject:@"ActionKitUI.framework"];
+        [_mutableForbiddenPaths addObject:@"WorkflowUI.framework"];
+    }
+    return _mutableForbiddenPaths;
+}
+
+@end
