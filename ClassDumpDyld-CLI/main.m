@@ -714,12 +714,13 @@ NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
         }
 
         if ([type rangeOfString:@"<"].location != NSNotFound) {
-            type = [type stringByReplacingOccurrencesOfString:@"> *" withString:@">"];
+//            type = [type stringByReplacingOccurrencesOfString:@"> *" withString:@">"];
 
             if ([type rangeOfString:@"<"].location == 0) {
                 type = [@"id" stringByAppendingString:type];
+                type = [type stringByReplacingOccurrencesOfString:@"> *" withString:@">"];
             } else {
-                type = [type stringByReplacingOccurrencesOfString:@"<" withString:@"*<"];
+//                type = [type stringByReplacingOccurrencesOfString:@"<" withString:@"*<"];
             }
         }
     } else if ([type rangeOfString:@"@"].location == 0 &&
@@ -766,7 +767,7 @@ NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
             }
 
             if ([attr isEqual:@"&"]) {
-                translatedProperty = @"retain";
+                translatedProperty = @"strong";
             }
 
             if ([attr isEqual:@"N"]) {
@@ -779,7 +780,7 @@ NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
             }
 
             if ([attr isEqual:@"W"]) {
-                translatedProperty = @"__weak";
+                translatedProperty = @"weak";
             }
 
             if ([attr isEqual:@"P"]) {
@@ -801,21 +802,22 @@ NSString * propertyLineGenerator(NSString *attributes, NSString *name) {
             [newPropsArray addObject:attr];
         }
     }
-
-    if ([newPropsArray containsObject:@"nonatomic"] && ![newPropsArray containsObject:@"assign"] &&
-        ![newPropsArray containsObject:@"readonly"] && ![newPropsArray containsObject:@"copy"] &&
-        ![newPropsArray containsObject:@"retain"]) {
-        [newPropsArray addObject:@"assign"];
-    }
+    
+//    if ([newPropsArray containsObject:@"nonatomic"] && ![newPropsArray containsObject:@"assign"] &&
+//        ![newPropsArray containsObject:@"readonly"] && ![newPropsArray containsObject:@"copy"] &&
+//        ![newPropsArray containsObject:@"strong"] && ![newPropsArray containsObject:@"weak"]) {
+//        [newPropsArray addObject:@"assign"];
+//    }
 
     newPropsArray = [newPropsArray reverseObjectEnumerator].allObjects.mutableCopy;
 
-    NSString *rebuiltString = [newPropsArray componentsJoinedByString:@","];
-    NSString *attrString =
-        [newPropsArray count] > 0 ? [NSString stringWithFormat:@"(%@)", rebuiltString] : @"(assign)";
-
-    return [[NSString alloc]
-            initWithFormat:@"\n%@%@ %@ %@; %@", @"@property ", attrString, type, name, synthesize];
+    NSString *rebuiltString = [newPropsArray componentsJoinedByString:@", "];
+    NSString *attrString = [newPropsArray count] > 0 ? [NSString stringWithFormat:@"(%@)", rebuiltString] : @"";
+    if ([type hasSuffix:@"*"]) {
+        return [[NSString alloc] initWithFormat:@"\n%@%@ %@%@; %@", @"@property ", attrString, type, name, synthesize];
+    } else {
+        return [[NSString alloc] initWithFormat:@"\n%@%@ %@ %@; %@", @"@property ", attrString, type, name, synthesize];
+    }
 }
 
 /****** Properties Combined Array (for fixing non-matching types)   ******/
@@ -2052,12 +2054,8 @@ NSString * generateMethodLines(Class someclass, BOOL isInstanceMethod,
 
         NSString *startTypes =
             returnTypeSameAsProperty
-        ? [NSString stringWithFormat:@"\n%@(%@)", startSign, returnTypeSameAsProperty]
-        : [NSString
-           stringWithFormat:@"\n%@(%@)", startSign,
-           commonTypes([NSString stringWithCString:returnType
-                                          encoding:NSUTF8StringEncoding],
-                       nil, NO)];
+        ? [NSString stringWithFormat:@"\n%@ (%@)", startSign, returnTypeSameAsProperty]
+        : [NSString stringWithFormat:@"\n%@ (%@)", startSign, commonTypes([NSString stringWithCString:returnType encoding:NSUTF8StringEncoding], nil, NO)];
         free(returnType);
 
         returnString = [returnString stringByAppendingString:startTypes];
@@ -2085,20 +2083,24 @@ NSString * generateMethodLines(Class someclass, BOOL isInstanceMethod,
                 }
 
                 if (methodTypeSameAsProperty) {
-                    returnString = [returnString
-                                    stringByAppendingString:[NSString
-                                                             stringWithFormat:@"%@:(%@)arg%d ",
-                                                             [selValuesArray objectAtIndex:i - 2],
-                                                             methodTypeSameAsProperty, i - 1]];
+                    if (i == methodArgs - 1) {
+                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d", [selValuesArray objectAtIndex:i - 2], methodTypeSameAsProperty, i - 1]];
+                    } else {
+                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d ", [selValuesArray objectAtIndex:i - 2], methodTypeSameAsProperty, i - 1]];
+                    }
                 } else {
                     id object = [selValuesArray objectAtSafeIndex:i - 2];
 
                     if (object == nil) {
                         continue;
                     }
-
-                    returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d ", object,
-                                                                          commonTypes([NSString stringWithCString:methodType encoding:NSUTF8StringEncoding], nil, NO), i - 1]];
+                    if (i == methodArgs - 1) {
+                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d", object,
+                                                                              commonTypes([NSString stringWithCString:methodType encoding:NSUTF8StringEncoding], nil, NO), i - 1]];
+                    } else {
+                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d ", object,
+                                                                              commonTypes([NSString stringWithCString:methodType encoding:NSUTF8StringEncoding], nil, NO), i - 1]];
+                    }
                 }
 
                 free(methodType);
@@ -2107,7 +2109,6 @@ NSString * generateMethodLines(Class someclass, BOOL isInstanceMethod,
             returnString = [returnString
                             stringByAppendingString:[NSString stringWithFormat:@"%@", SelectorNameNS]];
         }
-
         returnString = [returnString stringByAppendingString:@";"];
     }
 
@@ -2290,33 +2291,32 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
     // applications are skipped by default in a recursive, you can use -a to force-dump them
     // recursively
-    if (skipApplications) {
-        if (isRecursive && strstr(image, "/var/stash/Applications/")) {  // skip Applications dir
-            return 4;
-        }
+//    if (skipApplications) {
+//        if (isRecursive && strstr(image, "/var/stash/Applications/")) {  // skip Applications dir
+//            return 4;
+//        }
+//
+//        if (isRecursive && strstr(image, "/var/mobile/Applications/")) {  // skip Applications dir
+//            return 4;
+//        }
+//
+//        if (isRecursive &&
+//            strstr(image, "/var/mobile/Containers/Bundle/Application/")) {  // skip Applications dir
+//            return 4;
+//        }
+//
+//        if ((isRecursive && strstr(image, "SubstrateBootstrap.dylib")) ||
+//            (isRecursive && strstr(image, "CydiaSubstrate.framework"))) {  // skip Applications dir
+//            return 4;
+//        }
+//    }
+//
+//    if (isIOS11 && strstr(image, "SpringBoardUI")) {
+//        dlopen("/System/Library/PrivateFrameworks/SearchUI.framework/SearchUI",
+//               RTLD_NOW);  // rdar://problem/26143166
+//    }
 
-        if (isRecursive && strstr(image, "/var/mobile/Applications/")) {  // skip Applications dir
-            return 4;
-        }
-
-        if (isRecursive &&
-            strstr(image, "/var/mobile/Containers/Bundle/Application/")) {  // skip Applications dir
-            return 4;
-        }
-
-        if ((isRecursive && strstr(image, "SubstrateBootstrap.dylib")) ||
-            (isRecursive && strstr(image, "CydiaSubstrate.framework"))) {  // skip Applications dir
-            return 4;
-        }
-    }
-
-    if (isIOS11 && strstr(image, "SpringBoardUI")) {
-        dlopen("/System/Library/PrivateFrameworks/SearchUI.framework/SearchUI",
-               RTLD_NOW);  // rdar://problem/26143166
-    }
-
-    NSString *imageAsNSString = [[NSString alloc] initWithCString:image
-                                                         encoding:NSUTF8StringEncoding];
+    NSString *imageAsNSString = [[NSString alloc] initWithCString:image encoding:NSUTF8StringEncoding];
 
     for (NSString *forbiddenPath in forbiddenPaths) {
         if ([imageAsNSString rangeOfString:forbiddenPath].location != NSNotFound) {
@@ -2741,16 +2741,21 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                         protocolPrefix = [protocolNSString rangeOfString:@"_"].location == 0
                         ? [[protocolNSString substringFromIndex:1] substringToIndex:2]
                         : [protocolNSString substringToIndex:2];
-
+                        
                         if (!class_getImageName((Class)protocol)) {
                             printf("\n stringWithCString class_getImageName(protocol) empty \n");
                         }
-
-                        imageOfProtocol =
-                            ([imagePrefix isEqual:protocolPrefix] || !class_getImageName((Class)protocol))
+                        
+                        
+                        
+                        NSString *imageNameForProtocol = nil;
+                        const char *imageNameForProtocolCString = class_getImageName((Class)protocol);
+                        if (imageNameForProtocolCString) {
+                            imageNameForProtocol = [NSString stringWithCString:imageNameForProtocolCString encoding:NSUTF8StringEncoding];
+                        }
+                        imageOfProtocol = ([imagePrefix isEqual:protocolPrefix] || !imageNameForProtocol || [imageNameForProtocol containsString:@"libobjc.A.dylib"])
                         ? imageName
-                        : [NSString stringWithCString:class_getImageName((Class)protocol)
-                                             encoding:NSUTF8StringEncoding];
+                        : imageNameForProtocol;
                         imageOfProtocol = [imageOfProtocol lastPathComponent];
 
                         if ([protocolNSString rangeOfString:@"UI"].location == 0) {
@@ -2830,12 +2835,9 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                                                      &ivarNameNS, YES);
 
                         if ([ivarTypeString rangeOfString:@"@\""].location != NSNotFound) {
-                            ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"@\""
-                                                                                       withString:@""];
-                            ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"\""
-                                                                                       withString:@"*"];
-                            NSString *classFoundInIvars = [ivarTypeString stringByReplacingOccurrencesOfString:@"*"
-                                                                                                    withString:@""];
+                            ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"@\"" withString:@""];
+                            ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"\"" withString:@"*"];
+                            NSString *classFoundInIvars = [ivarTypeString stringByReplacingOccurrencesOfString:@"*" withString:@""];
 
                             if (![classesInClass containsObject:classFoundInIvars]) {
                                 if ([classFoundInIvars rangeOfString:@"<"].location != NSNotFound) {
@@ -2850,12 +2852,9 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                                     }
 
                                     NSString *protocolToAdd = [classFoundInIvars substringFromIndex:firstOpening];
-                                    protocolToAdd = [protocolToAdd stringByReplacingOccurrencesOfString:@"<"
-                                                                                             withString:@""];
-                                    protocolToAdd = [protocolToAdd stringByReplacingOccurrencesOfString:@">"
-                                                                                             withString:@""];
-                                    protocolToAdd = [protocolToAdd stringByReplacingOccurrencesOfString:@"*"
-                                                                                             withString:@""];
+                                    protocolToAdd = [protocolToAdd stringByReplacingOccurrencesOfString:@"<" withString:@""];
+                                    protocolToAdd = [protocolToAdd stringByReplacingOccurrencesOfString:@">" withString:@""];
+                                    protocolToAdd = [protocolToAdd stringByReplacingOccurrencesOfString:@"*" withString:@""];
 
                                     if (![inlineProtocols containsObject:protocolToAdd]) {
                                         [inlineProtocols addObject:protocolToAdd];
@@ -2866,14 +2865,13 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
                             }
 
                             if ([ivarTypeString rangeOfString:@"<"].location != NSNotFound) {
-                                ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@">*"
-                                                                                           withString:@">"];
+//                                ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@">*" withString:@">"];
 
                                 if ([ivarTypeString rangeOfString:@"<"].location == 0) {
                                     ivarTypeString = [@"id" stringByAppendingString:ivarTypeString];
+                                    ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@">*" withString:@">"];
                                 } else {
-                                    ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"<"
-                                                                                               withString:@"*<"];
+//                                    ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"<" withString:@"*<"];
                                 }
                             }
                         }
@@ -2984,10 +2982,8 @@ int parseImage(char *image, BOOL writeToDisk, NSString *outputDir, BOOL getSymbo
 
             // Gather All Strings
             [dumpString appendString:propertiesString];
-            [dumpString
-             appendString:generateMethodLines(object_getClass(currentClass), NO, nil)];
-            [dumpString appendString:generateMethodLines(currentClass, YES,
-                                                         propertiesArrayFromString(propertiesString))];
+            [dumpString appendString:generateMethodLines(object_getClass(currentClass), NO, nil)];
+            [dumpString appendString:generateMethodLines(currentClass, YES, propertiesArrayFromString(propertiesString))];
             [dumpString appendString:@"\n@end\n\n"];
 
             if (shouldImportStructs && writeToDisk) {
@@ -3438,7 +3434,7 @@ int main(int argc, char **argv, char **envp) {
         NSString *currentDir = [[[NSProcessInfo processInfo] environment] objectForKey:@"PWD"];
         NSMutableArray *arguments = [[NSProcessInfo processInfo] arguments].mutableCopy;
         [arguments addObject:@"-o"];
-        [arguments addObject:@"/Users/JH/Desktop/dump"];
+        [arguments addObject:@"/Volumes/Repositories/Private/Personal/Library/macOS/UXKit/UXKit/Headers"];
         [arguments addObject:@"-c"];
         [arguments addObject:@"-D"];
         NSMutableArray *argumentsToUse = [arguments mutableCopy];
@@ -3695,6 +3691,10 @@ int main(int argc, char **argv, char **envp) {
                     continue;
                 }
 
+                if (![[NSString stringWithCString:imageInCache] containsString:@"UXKit"]) {
+                    continue;
+                }
+                
                 NSStringCompareOptions opts = 0;
                 NSMutableString *imageToNSString =
                     [[NSMutableString alloc] initWithCString:imageInCache encoding:NSUTF8StringEncoding];
