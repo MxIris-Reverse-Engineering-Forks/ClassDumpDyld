@@ -7,21 +7,31 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E922CCC82B6D3B68003E19BB /* dyld_cache_format.h in Headers */ = {isa = PBXBuildFile; fileRef = E922CCC72B6D3B68003E19BB /* dyld_cache_format.h */; };
+		E922CCCA2B6D44EB003E19BB /* ClassDumpDyld.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E9A24C322B63F03200213629 /* ClassDumpDyld.framework */; };
+		E922CCCB2B6D44EB003E19BB /* ClassDumpDyld.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = E9A24C322B63F03200213629 /* ClassDumpDyld.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		E922CCD02B6D6527003E19BB /* Singleton.h in Headers */ = {isa = PBXBuildFile; fileRef = E922CCCF2B6D6527003E19BB /* Singleton.h */; };
+		E922CCD22B6D6639003E19BB /* ClassDumpDyld.h in Headers */ = {isa = PBXBuildFile; fileRef = E922CCD12B6D65D9003E19BB /* ClassDumpDyld.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		E9956C202B6248B7006B7F9E /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = E9956C1C2B6248B7006B7F9E /* main.m */; };
 		E9956C342B6374C3006B7F9E /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = E9956C302B6374C3006B7F9E /* main.mm */; };
 		E9A24C3A2B63F03200213629 /* ClassDumpDyld.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E9A24C322B63F03200213629 /* ClassDumpDyld.framework */; };
 		E9A24C3F2B63F03300213629 /* ClassDumpDyldTests.m in Sources */ = {isa = PBXBuildFile; fileRef = E9A24C3E2B63F03300213629 /* ClassDumpDyldTests.m */; };
-		E9A24C402B63F03300213629 /* ClassDumpDyld.h in Headers */ = {isa = PBXBuildFile; fileRef = E9A24C342B63F03200213629 /* ClassDumpDyld.h */; settings = {ATTRIBUTES = (Public, ); }; };
-		E9A24C492B63F07A00213629 /* ClassDumpDyldManager.h in Headers */ = {isa = PBXBuildFile; fileRef = E9A24C472B63F07A00213629 /* ClassDumpDyldManager.h */; };
+		E9A24C402B63F03300213629 /* ClassDumpDyldManager.h in Headers */ = {isa = PBXBuildFile; fileRef = E9A24C342B63F03200213629 /* ClassDumpDyldManager.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		E9A24C4A2B63F07A00213629 /* ClassDumpDyldManager.m in Sources */ = {isa = PBXBuildFile; fileRef = E9A24C482B63F07A00213629 /* ClassDumpDyldManager.m */; };
 		E9A24C4D2B63F0BE00213629 /* ClassDumpDyldHelper.h in Headers */ = {isa = PBXBuildFile; fileRef = E9A24C4B2B63F0BE00213629 /* ClassDumpDyldHelper.h */; };
 		E9A24C4E2B63F0BE00213629 /* ClassDumpDyldHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = E9A24C4C2B63F0BE00213629 /* ClassDumpDyldHelper.m */; };
-		E9A24C502B63F2C400213629 /* Singleton.h in Headers */ = {isa = PBXBuildFile; fileRef = E9A24C4F2B63F2C400213629 /* Singleton.h */; };
 		E9A24C532B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.h in Headers */ = {isa = PBXBuildFile; fileRef = E9A24C512B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.h */; };
 		E9A24C542B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.m in Sources */ = {isa = PBXBuildFile; fileRef = E9A24C522B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		E922CCCC2B6D44EB003E19BB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E9956C092B624848006B7F9E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E9A24C312B63F03200213629;
+			remoteInfo = ClassDumpDyld;
+		};
 		E9A24C3B2B63F03200213629 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E9956C092B624848006B7F9E /* Project object */;
@@ -32,6 +42,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		E922CCCE2B6D44EC003E19BB /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				E922CCCB2B6D44EB003E19BB /* ClassDumpDyld.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E9956C0F2B624848006B7F9E /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -53,20 +74,20 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E922CCC72B6D3B68003E19BB /* dyld_cache_format.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = dyld_cache_format.h; sourceTree = "<group>"; };
+		E922CCCF2B6D6527003E19BB /* Singleton.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Singleton.h; sourceTree = "<group>"; };
+		E922CCD12B6D65D9003E19BB /* ClassDumpDyld.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ClassDumpDyld.h; sourceTree = "<group>"; };
 		E9956C112B624848006B7F9E /* ClassDumpDyld-CLI */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "ClassDumpDyld-CLI"; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9956C1C2B6248B7006B7F9E /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		E9956C272B6374AB006B7F9E /* lechium-version */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "lechium-version"; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9956C302B6374C3006B7F9E /* main.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
-		E9956C362B63A749006B7F9E /* dyld_cache_format.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = dyld_cache_format.h; sourceTree = "<group>"; };
 		E9A24C322B63F03200213629 /* ClassDumpDyld.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ClassDumpDyld.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		E9A24C342B63F03200213629 /* ClassDumpDyld.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ClassDumpDyld.h; sourceTree = "<group>"; };
+		E9A24C342B63F03200213629 /* ClassDumpDyldManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ClassDumpDyldManager.h; sourceTree = "<group>"; };
 		E9A24C392B63F03200213629 /* ClassDumpDyldTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClassDumpDyldTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E9A24C3E2B63F03300213629 /* ClassDumpDyldTests.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ClassDumpDyldTests.m; sourceTree = "<group>"; };
-		E9A24C472B63F07A00213629 /* ClassDumpDyldManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ClassDumpDyldManager.h; sourceTree = "<group>"; };
 		E9A24C482B63F07A00213629 /* ClassDumpDyldManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ClassDumpDyldManager.m; sourceTree = "<group>"; };
 		E9A24C4B2B63F0BE00213629 /* ClassDumpDyldHelper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ClassDumpDyldHelper.h; sourceTree = "<group>"; };
 		E9A24C4C2B63F0BE00213629 /* ClassDumpDyldHelper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ClassDumpDyldHelper.m; sourceTree = "<group>"; };
-		E9A24C4F2B63F2C400213629 /* Singleton.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Singleton.h; sourceTree = "<group>"; };
 		E9A24C512B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NSMethodSignature+ClassDumpDyld.h"; sourceTree = "<group>"; };
 		E9A24C522B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "NSMethodSignature+ClassDumpDyld.m"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -76,6 +97,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E922CCCA2B6D44EB003E19BB /* ClassDumpDyld.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -104,6 +126,13 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		E922CCC92B6D44EB003E19BB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		E9956C082B624848006B7F9E = {
 			isa = PBXGroup;
 			children = (
@@ -112,6 +141,7 @@
 				E9A24C332B63F03200213629 /* ClassDumpDyld */,
 				E9A24C3D2B63F03300213629 /* ClassDumpDyldTests */,
 				E9956C122B624848006B7F9E /* Products */,
+				E922CCC92B6D44EB003E19BB /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -129,7 +159,6 @@
 		E9956C132B624848006B7F9E /* ClassDumpDyld-CLI */ = {
 			isa = PBXGroup;
 			children = (
-				E9956C362B63A749006B7F9E /* dyld_cache_format.h */,
 				E9956C1C2B6248B7006B7F9E /* main.m */,
 			);
 			path = "ClassDumpDyld-CLI";
@@ -146,14 +175,8 @@
 		E9A24C332B63F03200213629 /* ClassDumpDyld */ = {
 			isa = PBXGroup;
 			children = (
-				E9A24C342B63F03200213629 /* ClassDumpDyld.h */,
-				E9A24C4F2B63F2C400213629 /* Singleton.h */,
-				E9A24C472B63F07A00213629 /* ClassDumpDyldManager.h */,
-				E9A24C482B63F07A00213629 /* ClassDumpDyldManager.m */,
-				E9A24C4B2B63F0BE00213629 /* ClassDumpDyldHelper.h */,
-				E9A24C4C2B63F0BE00213629 /* ClassDumpDyldHelper.m */,
-				E9A24C512B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.h */,
-				E9A24C522B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.m */,
+				E9E271402B6E99C80007B641 /* Public */,
+				E9E271412B6E99D60007B641 /* Private */,
 			);
 			path = ClassDumpDyld;
 			sourceTree = "<group>";
@@ -166,6 +189,29 @@
 			path = ClassDumpDyldTests;
 			sourceTree = "<group>";
 		};
+		E9E271402B6E99C80007B641 /* Public */ = {
+			isa = PBXGroup;
+			children = (
+				E922CCD12B6D65D9003E19BB /* ClassDumpDyld.h */,
+				E9A24C342B63F03200213629 /* ClassDumpDyldManager.h */,
+			);
+			path = Public;
+			sourceTree = "<group>";
+		};
+		E9E271412B6E99D60007B641 /* Private */ = {
+			isa = PBXGroup;
+			children = (
+				E9A24C482B63F07A00213629 /* ClassDumpDyldManager.m */,
+				E9A24C4B2B63F0BE00213629 /* ClassDumpDyldHelper.h */,
+				E9A24C4C2B63F0BE00213629 /* ClassDumpDyldHelper.m */,
+				E9A24C512B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.h */,
+				E9A24C522B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.m */,
+				E922CCC72B6D3B68003E19BB /* dyld_cache_format.h */,
+				E922CCCF2B6D6527003E19BB /* Singleton.h */,
+			);
+			path = Private;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -173,11 +219,12 @@
 			isa = PBXHeadersBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E9A24C502B63F2C400213629 /* Singleton.h in Headers */,
 				E9A24C532B63FB0300213629 /* NSMethodSignature+ClassDumpDyld.h in Headers */,
-				E9A24C492B63F07A00213629 /* ClassDumpDyldManager.h in Headers */,
+				E9A24C402B63F03300213629 /* ClassDumpDyldManager.h in Headers */,
+				E922CCD22B6D6639003E19BB /* ClassDumpDyld.h in Headers */,
+				E922CCC82B6D3B68003E19BB /* dyld_cache_format.h in Headers */,
 				E9A24C4D2B63F0BE00213629 /* ClassDumpDyldHelper.h in Headers */,
-				E9A24C402B63F03300213629 /* ClassDumpDyld.h in Headers */,
+				E922CCD02B6D6527003E19BB /* Singleton.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -191,10 +238,12 @@
 				E9956C0D2B624848006B7F9E /* Sources */,
 				E9956C0E2B624848006B7F9E /* Frameworks */,
 				E9956C0F2B624848006B7F9E /* CopyFiles */,
+				E922CCCE2B6D44EC003E19BB /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E922CCCD2B6D44EB003E19BB /* PBXTargetDependency */,
 			);
 			name = "ClassDumpDyld-CLI";
 			productName = ClassDumpDyld;
@@ -353,6 +402,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		E922CCCD2B6D44EB003E19BB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E9A24C312B63F03200213629 /* ClassDumpDyld */;
+			targetProxy = E922CCCC2B6D44EB003E19BB /* PBXContainerItemProxy */;
+		};
 		E9A24C3C2B63F03200213629 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = E9A24C312B63F03200213629 /* ClassDumpDyld */;

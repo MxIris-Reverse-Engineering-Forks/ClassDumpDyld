@@ -209,7 +209,7 @@ NSString * copyrightMessage(char *image) {
     }
 }
 
-inline void loadBar(int x, int n, int r, int w, const char *className) {
+void loadBar(int x, int n, int r, int w, const char *className) {
     //    return;
     // Only update r times.
     if ((n / r) < 1) {
@@ -239,4 +239,35 @@ inline void loadBar(int x, int n, int r, int w, const char *className) {
     // ANSI Control codes to go back to the
     // previous line and clear it.
     printf("] %s %d/%d <%s>\n\033[F\033[J", [print_free_memory() UTF8String], x, n, className);
+}
+
+NSString * print_free_memory(void) {
+    mach_port_t host_port;
+    mach_msg_type_number_t host_size;
+    vm_size_t pagesize;
+
+    host_port = mach_host_self();
+    host_size = sizeof(vm_statistics_data_t) / sizeof(integer_t);
+    host_page_size(host_port, &pagesize);
+
+    vm_statistics_data_t vm_stat;
+
+    if (host_statistics(host_port, HOST_VM_INFO, (host_info_t)&vm_stat, &host_size) != KERN_SUCCESS) {
+        // Failed to fetch vm stats
+    }
+
+    natural_t mem_free = vm_stat.free_count * (natural_t)pagesize;
+
+    if (mem_free < 10000000) {  // break if less than 10MB of RAM
+        printf("Error: Out of memory. You can repeat with -s option to continue from where left.\n\n");
+        exit(0);
+    }
+
+    if (mem_free < 20000000) {  // warn if less than 20MB of RAM
+        return [NSString stringWithFormat:@"Low Memory: %u MB free. Might exit to prevent system hang",
+                (mem_free / 1024 / 1024)];
+    } else {
+        return [NSString stringWithCString:"" encoding:NSASCIIStringEncoding];
+        // return [NSString stringWithFormat:@"Memory: %u MB free",(mem_free/1024/1024)] ;
+    }
 }

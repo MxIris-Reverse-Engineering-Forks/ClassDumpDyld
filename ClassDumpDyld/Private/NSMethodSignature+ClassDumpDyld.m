@@ -22,6 +22,7 @@
         // rather than a union
 
         NSRange range = [text rangeOfString:@"\\(([^\\(\\)]+)\\)" options:NSRegularExpressionSearch];
+        if (range.location == NSNotFound) return nil;
         NSString *rep = [text substringWithRange:range];
         NSString *testUnion =
             [rep stringByReplacingOccurrencesOfString:@"("
