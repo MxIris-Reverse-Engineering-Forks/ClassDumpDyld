@@ -3,10 +3,14 @@ import XCTest
 
 final class ClassDumpDyldTests: XCTestCase {
     func testExample() throws {
-        // XCTest Documentation
-        // https://developer.apple.com/documentation/xctest
-
-        // Defining Test Cases and Test Methods
-        // https://developer.apple.com/documentation/xctest/defining_test_cases_and_test_methods
+        ClassDumpDyldManager.shared.allImages { allImages, error in
+            if let allImages {
+                print(allImages, allImages.count)
+            }
+            
+            if let error {
+                print(error)
+            }
+        }
     }
 }

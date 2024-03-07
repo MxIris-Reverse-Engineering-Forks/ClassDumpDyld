@@ -26,7 +26,5 @@ BOOL is64BitMachO(const char *image);
 BOOL fileExistsOnDisk(const char *image);
 BOOL arch64(void);
 long locationOfString(const char *haystack, const char *needle);
-NSString * print_free_memory(void);
-NSString * copyrightMessage(char *image);
-void loadBar(int x, int n, int r, int w, const char *className);
+
 NS_ASSUME_NONNULL_END

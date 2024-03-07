@@ -8,4 +8,4 @@ FOUNDATION_EXPORT const unsigned char ClassDumpDyldVersionString[];
 
 // In this header, you should import all the public headers of your framework using statements like #import <ClassDumpDyld/PublicHeader.h>
 
-#import "ClassDumpDyldManager.h"
+#import "../Private/ClassDumpDyldManager.h"
