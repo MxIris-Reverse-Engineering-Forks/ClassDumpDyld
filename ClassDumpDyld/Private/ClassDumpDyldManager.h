@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)addForbiddenPaths:(NSSet<NSString *> *)paths;
 - (void)allImagesWithCompletion:(void(^)(NSArray<NSString *> * _Nullable allImages, NSError * _Nullable error))completion;
 - (void)dumpImageHeaders:(NSString *)image toPath:(NSString *)outputPath completion:(void(^ _Nullable)(NSError * _Nullable error))completion;
+- (void)dumpAllImageHeadersToPath:(NSString *)outputPath completion:(void (^ _Nullable)(void))completion;
 @end
 
 NS_ASSUME_NONNULL_END

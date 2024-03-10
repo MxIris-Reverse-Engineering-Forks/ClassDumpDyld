@@ -32,8 +32,6 @@
 #define CDLog(...) \
 if (self.isDebug) NSLog(@"classdump-dyld : %@", [NSString stringWithFormat:__VA_ARGS__])
 
-typedef void *MSImageRef;
-
 static NSErrorDomain const ClassDumpDyldErrorDomain = @"ClassDumpDyldErrorDomain";
 
 @interface ClassDumpDyldManager () {
@@ -90,14 +88,14 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
         stat(filename, &filebuffer);
         unsigned long long filesize = filebuffer.st_size;
         int fd = open(filename, O_RDONLY);
-        _cacheData = (uint8_t *)mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
-        _cacheHead = (struct dyld_cache_header *)_cacheData;
-        uint64_t curoffset = _cacheHead->imagesOffset;
+        self->_cacheData = (uint8_t *)mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
+        self->_cacheHead = (struct dyld_cache_header *)self->_cacheData;
+        uint64_t curoffset = self->_cacheHead->imagesOffset;
         NSMutableArray<NSString *> *allImages = [NSMutableArray array];
-        for (unsigned i = 0; i < _cacheHead->imagesCount; ++i) {
-            uint64_t fo = *(uint64_t *)(_cacheData + curoffset + 24);
+        for (unsigned i = 0; i < self->_cacheHead->imagesCount; ++i) {
+            uint64_t fo = *(uint64_t *)(self->_cacheData + curoffset + 24);
             curoffset += 32;
-            char *imageInCache = (char *)_cacheData + fo;
+            char *imageInCache = (char *)self->_cacheData + fo;
             
             NSStringCompareOptions opts = 0;
             NSMutableString *imageToNSString =
@@ -114,13 +112,29 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
             [allImages addObject:imageToNSString];
         }
         
-        munmap(_cacheData, filesize);
+        munmap(self->_cacheData, filesize);
         close(fd);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion) {
                 completion(allImages, nil);
             }
         });
+    });
+}
+
+
+- (void)dumpAllImageHeadersToPath:(NSString *)outputPath completion:(void (^ _Nullable)(void))completion {
+    dispatch_group_t group = dispatch_group_create();
+    [self allImagesWithCompletion:^(NSArray<NSString *> * _Nullable allImages, NSError * _Nullable error) {
+        for (NSString *image in allImages) {
+            dispatch_group_enter(group);
+            [self dumpImageHeaders:image toPath:outputPath completion:^(NSError * _Nullable error) {
+                dispatch_group_leave(group);
+            }];
+        }
+    }];
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        completion();
     });
 }
 
@@ -255,7 +269,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
             CDLog(@"Processing Class %s (%d/%d)\n", names[i], i, count);
             
             if (!names[i]) {
-                printf("\n stringWithCString names[i] empty \n");
+                CDLog(@"\n stringWithCString names[i] empty \n");
             }
             
             NSString *classNameNS = [NSString stringWithCString:names[i] encoding:NSUTF8StringEncoding];
@@ -292,11 +306,6 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                 } else {
                     superclassString = @"";
                 }
-                //                    superclassString = [[currentClass superclass] description] != nil ? [NSString stringWithFormat:@" : %@", [[currentClass superclass] description]] : @"";
-                //                } @catch (NSException *exception) {
-                //                    NSLog(@"Trigger Exception: %@", exception);
-                //                    continue;
-                //                } @finally {}
             } else {
                 superclassString = @" : _UKNOWN_SUPERCLASS_";
             }
@@ -314,7 +323,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                 const char *protocolName = protocol_getName(protocolArray[t]);
                 
                 if (!protocolName) {
-                    printf("\n stringWithCString protocolName empty \n");
+                    CDLog(@"\n stringWithCString protocolName empty \n");
                 }
                 
                 NSString *addedProtocol = [NSString stringWithCString:protocolName encoding:NSUTF8StringEncoding];
@@ -357,7 +366,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                 const char *protocolName = protocol_getName(protocol);
                 
                 if (!protocolName) {
-                    printf("\n stringWithCString protocolName empty \n");
+                    CDLog(@"\n stringWithCString protocolName empty \n");
                 }
                 
                 NSString *protocolNSString = [NSString stringWithCString:protocolName encoding:NSUTF8StringEncoding];
@@ -372,7 +381,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                     protocolPrefix = [protocolNSString rangeOfString:@"_"].location == 0 ? [[protocolNSString substringFromIndex:1] substringToIndex:2] : [protocolNSString substringToIndex:2];
                     
                     if (!class_getImageName((Class)protocol)) {
-                        printf("\n stringWithCString class_getImageName(protocol) empty \n");
+                        CDLog(@"\n stringWithCString class_getImageName(protocol) empty \n");
                     }
                     
                     
@@ -416,7 +425,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                           atomically:YES
                           encoding:NSUTF8StringEncoding
                           error:nil]) {
-                        printf("  Failed to save protocol header to directory \"%s\"\n", [writeDir UTF8String]);
+                        CDLog(@"  Failed to save protocol header to directory \"%s\"\n", [writeDir UTF8String]);
                     }
                 }
             }
@@ -437,16 +446,16 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                     const char *ivarName = ivar_getName(currentIvar);
                     
                     if (!ivarName) {
-                        printf("\n stringWithCString ivarName empty \n");
+                        CDLog(@"\n stringWithCString ivarName empty \n");
                     }
                     
                     NSString *ivarNameNS = [NSString stringWithCString:ivarName encoding:NSUTF8StringEncoding];
                     const char *ivarType = ivar_getTypeEncoding(currentIvar);
                     
                     if (!ivarType) {
-                        printf("\n stringWithCString ivarType empty for ivarName %s in class %s with ivar count "
-                               "%u \n",
-                               ivarName, [[currentClass description] UTF8String], ivarOutCount);
+                        CDLog(@"\n stringWithCString ivarType empty for ivarName %s in class %s with ivar count "
+                              "%u \n",
+                              ivarName, [[currentClass description] UTF8String], ivarOutCount);
                     }
                     
                     NSString *ivarTypeString = NULL;
@@ -485,13 +494,9 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                             }
                             
                             if ([ivarTypeString rangeOfString:@"<"].location != NSNotFound) {
-                                //                                ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@">*" withString:@">"];
-                                
                                 if ([ivarTypeString rangeOfString:@"<"].location == 0) {
                                     ivarTypeString = [@"id" stringByAppendingString:ivarTypeString];
                                     ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@">*" withString:@">"];
-                                } else {
-                                    //                                    ivarTypeString = [ivarTypeString stringByReplacingOccurrencesOfString:@"<" withString:@"*<"];
                                 }
                             }
                         }
@@ -536,11 +541,11 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                 const char *attrs = property_getAttributes(propertyList[b]);
                 
                 if (!attrs) {
-                    printf("\n stringWithCString attrs empty \n");
+                    CDLog(@"\n stringWithCString attrs empty \n");
                 }
                 
                 if (!propname) {
-                    printf("\n stringWithCString propname empty \n");
+                    CDLog(@"\n stringWithCString propname empty \n");
                 }
                 NSString *attributes = [NSString stringWithCString:attrs encoding:NSUTF8StringEncoding];
                 NSString *name = [NSString stringWithCString:propname encoding:NSUTF8StringEncoding];
@@ -618,7 +623,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
             
             if ([self.classesInClass count] > 0) {
                 if (!names[i]) {
-                    printf("\n stringWithCString names[i] empty \n");
+                    CDLog(@"\n stringWithCString names[i] empty \n");
                 }
                 
                 [self.classesInClass removeObject:[NSString stringWithCString:names[i]
@@ -671,7 +676,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                 return;
                 
                 //                if (writeError != nil) {
-                //                    printf("  %s\n", [[writeError description] UTF8String]);
+                //                    CDLog(@"  %s\n", [[writeError description] UTF8String]);
                 //                }
                 //
                 //                break;
@@ -690,9 +695,9 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
     // END OF PER-CLASS LOOP
     
     if (actuallyProcesssedCount == 0 && self.onlyOneClass) {
-        printf("\r\n" "\t\tlibclassdump-dyld:" " Class \"" "%s"
-               "\" not found" " in %s\r\n\r\n",
-               [self.onlyOneClass UTF8String], image);
+        CDLog(@"\r\n" "\t\tlibclassdump-dyld:" " Class \"" "%s"
+              "\" not found" " in %s\r\n\r\n",
+              [self.onlyOneClass UTF8String], image);
     }
     
     if (classesToImport.length > 2) {
@@ -705,7 +710,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                                atomically:YES
                                  encoding:NSUTF8StringEncoding
                                     error:nil]) {
-            printf("  Failed to save header list to directory \"%s\"\n", [writeDir UTF8String]);
+            CDLog(@"  Failed to save header list to directory \"%s\"\n", [writeDir UTF8String]);
         }
     }
     
@@ -748,10 +753,10 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                   atomically:YES
                   encoding:NSUTF8StringEncoding
                   error:&writeError]) {
-                printf("  Failed to save structs to directory \"%s\"\n", [writeDir UTF8String]);
+                CDLog(@"  Failed to save structs to directory \"%s\"\n", [writeDir UTF8String]);
                 
                 if (writeError != nil) {
-                    printf("  %s\n", [[writeError description] UTF8String]);
+                    CDLog(@"  %s\n", [[writeError description] UTF8String]);
                 }
             }
         }
@@ -1754,11 +1759,8 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                                      usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags,
                                                   BOOL *stop) {
                     for (NSUInteger i = 1; i < [result numberOfRanges]; ) {
-                        NSString *foundString =
-                        [tempString substringWithRange:[result rangeAtIndex:i]];
-                        tempString =
-                        [tempString stringByReplacingOccurrencesOfString:foundString
-                                                              withString:@""];
+                        NSString *foundString = [tempString substringWithRange:[result rangeAtIndex:i]];
+                        tempString = [tempString stringByReplacingOccurrencesOfString:foundString withString:@""];
                         [numberOfArray addObject:foundString];  // e.g. [2] or [100c]
                         break;
                     }
@@ -1768,10 +1770,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
             NSString *stringContainingType = nil;
             
             for (NSString *aString in numberOfArray) {
-                NSCharacterSet *set = [[NSCharacterSet
-                                        characterSetWithCharactersInString:
-                                            @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLKMNOPQRSTUVWXYZ@#$%^&*()!<>?:\"|}{"]
-                                       invertedSet];
+                NSCharacterSet *set = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLKMNOPQRSTUVWXYZ@#$%^&*()!<>?:\"|}{"] invertedSet];
                 
                 if ([aString rangeOfCharacterFromSet:set].location != NSNotFound) {
                     stringContainingType = aString;
@@ -1790,8 +1789,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
             ? stringContainingType
             : [stringContainingType substringFromIndex:letterLocation];
             outtype = [outtype stringByReplacingOccurrencesOfString:@"]" withString:@""];
-            stringContainingType = [stringContainingType stringByReplacingOccurrencesOfString:outtype
-                                                                                   withString:@""];
+            stringContainingType = [stringContainingType stringByReplacingOccurrencesOfString:outtype withString:@""];
             
             for (NSString *subarr in numberOfArray) {
                 stringContainingType = [subarr stringByAppendingString:stringContainingType];
@@ -2046,9 +2044,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
         NSString *startTypes =
         returnTypeSameAsProperty
         ? [NSString stringWithFormat:@"\n%@(%@)", startSign, returnTypeSameAsProperty]
-        : [NSString
-           stringWithFormat:@"\n%@(%@)", startSign, [self commonTyps:[NSString stringWithCString:returnType
-                                                                                        encoding:NSUTF8StringEncoding] inName:nil inIvarList:NO]];
+        : [NSString stringWithFormat:@"\n%@(%@)", startSign, [self commonTyps:[NSString stringWithCString:returnType encoding:NSUTF8StringEncoding] inName:nil inIvarList:NO]];
         free(returnType);
         
         returnString = [returnString stringByAppendingString:startTypes];
@@ -2067,8 +2063,7 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                         NSString *capitalizedFirst =
                         [firstCapitalized stringByAppendingString:[propertyName substringFromIndex:1]];
                         
-                        if ([[selValuesArray objectAtIndex:0]
-                             isEqual:[NSString stringWithFormat:@"set%@", capitalizedFirst]]) {
+                        if ([[selValuesArray objectAtIndex:0] isEqual:[NSString stringWithFormat:@"set%@", capitalizedFirst]]) {
                             methodTypeSameAsProperty = [dict objectForKey:@"type"];
                             break;
                         }
@@ -2089,19 +2084,16 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
                     }
                     NSString *methodArgType = [self commonTyps:[NSString stringWithCString:methodType encoding:NSUTF8StringEncoding] inName:nil inIvarList:NO];
                     if (i == methodArgs - 1) {
-                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d", object, methodArgType
-                                                                              , i - 1]];
+                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d", object, methodArgType, i - 1]];
                     } else {
-                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d ", object,
-                                                                              methodArgType, i - 1]];
+                        returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@:(%@)arg%d ", object, methodArgType, i - 1]];
                     }
                 }
                 
                 free(methodType);
             }
         } else {
-            returnString = [returnString
-                            stringByAppendingString:[NSString stringWithFormat:@"%@", SelectorNameNS]];
+            returnString = [returnString stringByAppendingString:[NSString stringWithFormat:@"%@", SelectorNameNS]];
         }
         returnString = [returnString stringByAppendingString:@";"];
     }
