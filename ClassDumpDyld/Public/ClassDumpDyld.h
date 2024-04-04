@@ -8,8 +8,8 @@ FOUNDATION_EXPORT const unsigned char ClassDumpDyldVersionString[];
 
 // In this header, you should import all the public headers of your framework using statements like #import <ClassDumpDyld/PublicHeader.h>
 
-#if SWIFT_PACKAGE
-#import "../Private/ClassDumpDyldManager.h"
-#else
+#if __has_include("<ClassDumpDyld/ClassDumpDyldManager.h>")
 #import <ClassDumpDyld/ClassDumpDyldManager.h>
+#else
+#import "../Private/ClassDumpDyldManager.h"
 #endif

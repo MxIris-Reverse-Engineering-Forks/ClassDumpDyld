@@ -21,6 +21,7 @@
 #import <sys/mman.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+
 @implementation NSArray (Safe)
 
 - (nullable id)objectAtSafeIndex:(NSUInteger)safeIndex {
@@ -144,7 +145,32 @@ SingletonImplementation(ClassDumpDyldManager, sharedManager)
     [self parseImage:(char *)[image UTF8String] outputDir:outputPath isRecursive:YES isBuildOriginalDirs:YES isSimpleHeader:NO isSkipAlreadyFound:NO isSkipApplications:YES completion:completion];
 }
 
+- (NSString *)dyldSharedCachePathForArch:(ClassDumpDyldArch)arch {
+    NSMutableString *dyldSharedCachePath = [NSMutableString string];
+    [dyldSharedCachePath appendString:[NSString stringWithUTF8String:cryptexPrefixes[kDyldSharedCacheTypeUniversal]]];
+    [dyldSharedCachePath appendString:[NSString stringWithUTF8String:MACOSX_DYLD_SHARED_CACHE_DIR]];
+    [dyldSharedCachePath appendString:[NSString stringWithUTF8String:DYLD_SHARED_CACHE_BASE_NAME]];
+    switch (arch) {
+        case ClassDumpDyldArchARM64e:
+            [dyldSharedCachePath appendString:@"arm64e"];
+            break;
+        case ClassDumpDyldArchX86_64:
+            [dyldSharedCachePath appendString:@"x86_64"];
+            break;
+        default: {
+            if (ClassDumpDyldHelper.isArch64) {
+                [dyldSharedCachePath appendString:@"arm64e"];
+            } else {
+                [dyldSharedCachePath appendString:@"x86_64"];
+            }
+        }
+            break;
+    }
+    return dyldSharedCachePath;
+}
 
+
+#pragma mark - Private Methods
 - (void)parseImage:(char *)image outputDir:(NSString *)outputDir isRecursive:(BOOL)isRecursive isBuildOriginalDirs:(BOOL)buildOriginalDirs isSimpleHeader:(BOOL)simpleHeader isSkipAlreadyFound:(BOOL)skipAlreadyFound isSkipApplications:(BOOL)skipApplications completion:(void (^ _Nullable)(NSError * _Nullable))completion {
     if (!image) {
         completion([NSError errorWithDomain:ClassDumpDyldErrorDomain code:3 userInfo:@{

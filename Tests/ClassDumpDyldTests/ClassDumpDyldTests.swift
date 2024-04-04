@@ -10,4 +10,8 @@ final class ClassDumpDyldTests: XCTestCase {
         
         wait(for: [ex])
     }
+    
+    func testDyldSharedCachePath() {
+        print(ClassDumpDyldManager.shared.dyldSharedCachePath(for: .arm64e))
+    }
 }

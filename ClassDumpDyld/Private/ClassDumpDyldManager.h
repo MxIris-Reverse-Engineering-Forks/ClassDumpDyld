@@ -2,6 +2,11 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef NS_ENUM(NSUInteger, ClassDumpDyldArch) {
+    ClassDumpDyldArchARM64e,
+    ClassDumpDyldArchX86_64,
+};
+
 @interface ClassDumpDyldManager : NSObject
 @property (nonatomic, strong, class, readonly) ClassDumpDyldManager *sharedManager;
 @property (nonatomic, strong, readonly) NSSet<NSString *> *forbiddenClasses;
@@ -20,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)allImagesWithCompletion:(void(^)(NSArray<NSString *> * _Nullable allImages, NSError * _Nullable error))completion;
 - (void)dumpImageHeaders:(NSString *)image toPath:(NSString *)outputPath completion:(void(^ _Nullable)(NSError * _Nullable error))completion;
 - (void)dumpAllImageHeadersToPath:(NSString *)outputPath completion:(void (^ _Nullable)(void))completion;
+- (NSString *)dyldSharedCachePathForArch:(ClassDumpDyldArch)arch;
 @end
 
 NS_ASSUME_NONNULL_END
