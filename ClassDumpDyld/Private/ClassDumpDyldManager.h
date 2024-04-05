@@ -3,6 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSUInteger, ClassDumpDyldArch) {
+    ClassDumpDyldArchCurrent,
     ClassDumpDyldArchARM64e,
     ClassDumpDyldArchX86_64,
 };
